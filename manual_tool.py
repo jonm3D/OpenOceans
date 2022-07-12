@@ -1,5 +1,9 @@
-# must pass input --websocket-max-message-size=500000000
+# must pass input --websocket-max-message-size=500000000 
+# or whatever number is closest to the size of the h5 files youre reading in from local
 # otherwise typical h5 file will not be able to be passed and the server will close
+
+# example command
+# bokeh serve --show manual_tool.py --websocket-max-message-size=500000000
 
 ""
 import pandas as pd
@@ -9,47 +13,32 @@ import h5py
 import os
 import re
 import sys
-from pathlib import Path
-import matplotlib.pyplot as plt
+import datetime
+import warnings
 import pyproj
-from datetime import datetime
 
-from scipy.stats import norm
+from tqdm import tqdm 
+from io import BytesIO
+from pybase64 import b64decode
+from pathlib import Path
+
 from scipy.signal import peak_widths, find_peaks
 from astropy.time import Time, TimeDatetime
-import laspy
-
-import ipywidgets as widgets
-import warnings
-from tqdm import tqdm 
-from ipyfilechooser import FileChooser
 
 from bokeh.plotting import figure, curdoc
-from bokeh.models import ColumnDataSource, Paragraph, CheckboxGroup, Button, Circle, TextInput, FileInput, RadioButtonGroup, LassoSelectTool
-from bokeh.io import show, output_notebook
+from bokeh.models import  CheckboxGroup, Button, Circle, TextInput, FileInput, RadioButtonGroup, Select, MultiChoice
+from bokeh.models import DateRangeSlider, DatePicker
+from bokeh.models import Paragraph, Div, Panel, Tabs
+from bokeh.models import Range1d, ColumnDataSource, MultiLine, HoverTool
 from bokeh.layouts import column, row
-from bokeh.models import Range1d
-from bokeh.palettes import Category10
-
-
-import io
-from pybase64 import b64decode
 from bokeh.tile_providers import get_provider
 
-# from tkinter import filedialog
-# from tkinter import *
+from sliderule import icesat2
+from bokeh.models import BoxEditTool
+import logging
 
+########################### ICESAT2 FUNCTIONS ##############################
 
-tile_provider = get_provider('ESRI_IMAGERY')
-
-color_palette = Category10[4]
-
-unclass_color = color_palette[0]
-surface_color = color_palette[1]
-
-surface_class = 41
-no_bottom_class = 45
-bathy_class = 40
 
 def photon_refraction(W, Z, ref_az, ref_el,
                        n1=1.00029, n2=1.34116):
@@ -387,9 +376,14 @@ def reduce_gdf(gdf, RGT=None, track=None, pair=None, cycle=None):
         
     return D
 
+########################### DATA SETUP ##############################
 
-""
-panel_width = 350
+surface_class = 41
+no_bottom_class = 45
+bathy_class = 40
+
+gt_labels = ['gt1r', 'gt1l', 'gt2r', 'gt2l', 'gt3r', 'gt3l']
+
 
 df_cols = ['lon', 'lat', 'rgt', 'cycle', 'track', 'segment_id', 'segment_dist', 'sc_orient',
        'atl03_cnf', 'height', 'quality_ph', 'delta_time', 'pair',
@@ -415,78 +409,21 @@ sfc_src = ColumnDataSource(data=gdf_empty)
 subsfc_src = ColumnDataSource(data=gdf_empty)
 bathy_src = ColumnDataSource(data=gdf_empty)
 
+# bounding box
+bbox = pd.DataFrame([], index=['x', 'y', 'w', 'h']).T
+bbox_src = ColumnDataSource(bbox)
 
 
-fig_full_profile = figure(title='Full Track Profile', 
-                         tools='zoom_in,zoom_out,pan,box_zoom,wheel_zoom,undo,redo,reset,lasso_select',
-                          sizing_mode="scale_width", height=500,
-                          x_axis_type='mercator')#, x_range=fig_imagery.y_range)
-                        
-# glyphs
 
-wm_axis = 'x_wm'
-fig_full_profile.circle(x=wm_axis, y='height_ortho', 
-                        source=plt_src, size=0.5,
-                        color='black')
+########################### WIDGET / CALLBACK SETUP ##############################
 
-fig_full_profile.circle(x=wm_axis, 
-                        y='height_ortho', 
-                        source=sfc_src, 
-                        size=0.5,
-                        color='blue', 
-                        legend_label='Water Surface (Class {})'.format(surface_class))
-
-fig_full_profile.line(x=wm_axis, y='surface_height', source=plt_src, 
-                        color='lime', line_width=3,
-                        name='surface_model')
-
-fig_full_profile.circle(x=wm_axis, 
-                        y='height_ortho',
-                        source=subsfc_src,
-                        size=0.5,
-                        color='grey', 
-                        legend_label='Subsurface Noise (Class {})'.format(no_bottom_class), 
-                        name='subsurface',
-                        selection_color='red',
-                        selection_fill_alpha=1,
-                        selection_line_color='red',
-                        nonselection_fill_alpha=0.9,
-                        nonselection_line_color='black',
-                        nonselection_fill_color="black")
-
-fig_full_profile.circle(x=wm_axis, 
-                        y='height_ortho',
-                        source=bathy_src,
-                        size=0.5,
-                        color='black', 
-                        legend_label='Uncorrected Bathymetry (Class {})'.format(bathy_class))
-
-fig_full_profile.circle(x=wm_axis, 
-                        y='height_ortho_c',
-                        source = bathy_src,
-                        size=0.5,
-                        color='red', 
-                        legend_label='Bathymetry, Refraction Corrected'.format(bathy_class))
-
-fig_full_profile.legend.location = "bottom_left"
-fig_full_profile.legend.visible = False
-
-# figures
-fig_imagery = figure(title='', 
-                     x_range=(-6000000, 6000000), 
-                     y_range=(-1000000, 7000000),
-                     x_axis_type="mercator", 
-                     y_axis_type="mercator", 
-                     tools='zoom_in,zoom_out,pan,box_zoom,wheel_zoom,undo,redo,reset,', sizing_mode="stretch_height", 
-                     width=panel_width, toolbar_location='below')
-
-fig_imagery.add_tile(tile_provider)
-trackline = fig_imagery.line(x='y_wm', y='x_wm', source=src_gt, color='red', line_width=1)
-gt_labels = ['gt1r', 'gt1l', 'gt2r', 'gt2l', 'gt3r', 'gt3l']
+# Select input h5 file
+w_file_input = FileInput(accept=".h5", sizing_mode="stretch_width")
 
 def import_h5(attr, old, new):
-    decoded = b64decode(file_in_w.value)
-    f = io.BytesIO(decoded)
+    w_status_box.text='Loading h5...'
+    decoded = b64decode(w_file_input.value)
+    f = BytesIO(decoded)
     # h = h5py.File(f,'r')
     gdf1 = read_h5_as_df(f, 
                        gt_labels, 
@@ -515,10 +452,20 @@ def import_h5(attr, old, new):
     src.data = gdf1.drop('geometry', axis=1)
     
     # enable the gtxx selector boxes
-    gt_w.disabled=False
+    w_gt_select.disabled=False
+    w_status_box.text='Successfully imported H5 file. Use tabs on left to select a beam.'
     
+w_file_input.on_change('value', import_h5)
+
+# Buttons to select which beam youre classifying
+w_gt_select = RadioButtonGroup(labels=gt_labels, 
+                        disabled=True, sizing_mode="stretch_width")
 
 def select_profile(attr, old, new):
+    # make the imagery window visible 
+    imagery_renderer = fig_imagery.select_one({'name': 'tile_renderer'})    
+    imagery_renderer.visible = True
+    
     # start fresh with classes in case the user is coming from another tab
     src_gt.data = gdf_empty
     plt_src.data = gdf_empty
@@ -534,8 +481,8 @@ def select_profile(attr, old, new):
     subsfc_src.selected.indices = []
     bathy_src.selected.indices = []
     
-    save_out_w.disabled=False
-    surface_line = fig_full_profile.select_one({'name': 'surface_model'})    
+    w_save_button.disabled=False
+    surface_line = fig_primary.select_one({'name': 'surface_model'})    
     surface_line.visible = True
     
     ######## 
@@ -559,27 +506,39 @@ def select_profile(attr, old, new):
     tform = pyproj.transformer.Transformer.from_crs(crs_from=wgs84, crs_to=web_merc)
     # src_gt_sub.data['y_wm'], src_gt_sub.data['x_wm'] = tform.transform(src_gt_sub.data['lat'], 
     #                                                                    src_gt_sub.data['lon'])
-    src_gt.data['y_wm'], src_gt.data['x_wm'] = tform.transform(src_gt.data['lat'], src_gt.data['lon'])
-        
-    # update range
-    #fig_full_profile.x_range = Range1d(min(src_gt.data['lat']), max(src_gt.data['lat']))
+    src_gt.data['x_wm'], src_gt.data['y_wm'] = tform.transform(src_gt.data['lat'], src_gt.data['lon'])
     
-    #fig_full_profile.x_range = Range1d(min(src_gt.data['lat']), max(src_gt.data['lat']))  
-    fig_full_profile.xaxis.axis_label = 'Latitude (deg)'
-    fig_full_profile.yaxis.axis_label = 'Orthometric Height (m)'
+    # update imagery window
+    fig_imagery.x_range.start = min(src_gt.data['x_wm'])
+    fig_imagery.x_range.end = max(src_gt.data['x_wm'])    
+    fig_imagery.y_range.start = min(src_gt.data['y_wm'])
+    fig_imagery.y_range.end = max(src_gt.data['y_wm'])
+    
+    # update primary window details
+    fig_primary.xaxis.axis_label = 'Latitude (deg)'
+    fig_primary.yaxis.axis_label = 'Orthometric Height (m)'
         
     # enable water surface calculation button
-    model_surface_w.disabled = False
-    select_points_w.disabled = True
-    calc_refract_w.disabled = True
+    w_surface_button.disabled = False
+    w_select_button.disabled = True
+    w_refract_button.disabled = True
+    w_save_button.disabled=True
+    w_save_button.button_type='default'
+    w_save_button.label='Save Data to Output'
     
     # update the base filename field
-    out_name_w.value = re.sub('ATL03', 'BATHY', 
-                              file_in_w.filename[:-3] + '_' + gt_labels[gt_w.active].upper())
+    w_out_name.value = re.sub('ATL03', 'BATHY', 
+                              w_file_input.filename[:-3] + '_' + gt_labels[w_gt_select.active].upper())
 
-    # update plot/remove legend
+    # update primary plot/remove legend
     plt_src.data = dict(src_gt.data)
-    fig_full_profile.legend.visible = False
+    
+    fig_primary.legend.visible = False
+
+w_gt_select.on_change('active', select_profile)
+
+# Button to start water surface modeling
+w_surface_button = Button(label='Model Water Surface', disabled=True, sizing_mode="stretch_width")
 
 def model_surface():
 
@@ -653,22 +612,29 @@ def model_surface():
         # update plotting data with new surface data for passing later
         plt_src.data = dict(src_gt.data)
 
-        select_points_w.disabled = False
-        model_surface_w.disabled = True
-    
+        w_select_button.disabled = False
+        w_surface_button.disabled = True
+
+w_surface_button.on_click(model_surface)
+
+# Button to begin point selection
+w_select_button = Button(label='Begin Point Selection', 
+                         disabled=True, 
+                         sizing_mode="stretch_width")
+
 def select_bathy():
     # make the lasso tool active
     
     # remove the water surface model from the plot
     # or get the glyph from the Figure:
-    surface_line = fig_full_profile.select_one({'name': 'surface_model'})    
+    surface_line = fig_primary.select_one({'name': 'surface_model'})    
     surface_line.visible = False
     
     # remove the legend from the plot
-    fig_full_profile.legend.visible = False
+    fig_primary.legend.visible = False
                         
     # change the subsurface points to black just for this selection step
-    subsurface_renderer = fig_full_profile.select_one({'name': 'subsurface'})
+    subsurface_renderer = fig_primary.select_one({'name': 'subsurface'})
     subsurface_renderer.glyph.fill_color='black'
     subsurface_renderer.glyph.line_color='black'
     subsurface_renderer.selection_glyph.size=0.5
@@ -678,7 +644,6 @@ def select_bathy():
     subsurface_renderer.nonselection_glyph.fill_color='black'
     subsurface_renderer.nonselection_glyph.line_color='black'
 
-    
     # get index of surface classifications
     surf_idx = plt_src.data['classification'] == surface_class
             
@@ -688,12 +653,19 @@ def select_bathy():
     plt_src.data = gdf_empty
     
     # enable selection tool
-    calc_refract_w.disabled = False
-    select_points_w.disabled = True
+    w_refract_button.disabled = False
+    w_select_button.disabled = True
     
+w_select_button.on_click(select_bathy)
+
+# Button to start refraction correction and update plots/data
+w_refract_button = Button(label='Calculate Refraction', 
+                        disabled=True, 
+                        sizing_mode="stretch_width")
+
 def correct_refraction():
     # switch subsurface photons back to gray for background
-    subsurface_renderer = fig_full_profile.select_one({'name': 'subsurface'})
+    subsurface_renderer = fig_primary.select_one({'name': 'subsurface'})
     subsurface_renderer.glyph.fill_color='grey'
     subsurface_renderer.glyph.line_color='grey'
     subsurface_renderer.selection_glyph.size=0.5
@@ -705,7 +677,7 @@ def correct_refraction():
     # disable lasso?
     
     # disable point selection button
-    select_points_w.disabled = True
+    w_select_button.disabled = True
     
     # for all selected points
     bathy_idx = subsfc_src.selected.indices
@@ -735,30 +707,56 @@ def correct_refraction():
     surf_idx = (src_gt.data['classification'] == surface_class)
     sfc_src.data = {key: value[surf_idx] for (key, value) in src_gt.data.items()}
     
-    fig_full_profile.legend.visible = True
+    fig_primary.legend.visible = True
     
     # disable calculate refraction button
-    calc_refract_w.disabled=True
-    save_out_w.disabled=False
+    w_refract_button.disabled=True
+    w_save_button.disabled=False
     
 
-    
+w_refract_button.on_click(correct_refraction)
+
+# Text box for specifying directory to output data
+w_out_path = TextInput(title="Output directory:", 
+                       value=os.getcwd(), 
+                       disabled=False, 
+                       sizing_mode="stretch_width")
+
+
+    # trying to change the text background red if the output directory doesnt exist - buggy
 def check_out_dir_exists(attr, old, new):
-    if not Path(out_path_w.value_input).exists():
-        out_path_w.background = 'red'
+    if not Path(w_out_path.value_input).exists():
+        w_out_path.background = 'red'
     else:
-        out_path_w.background = 'white'
+        w_out_path.background = 'white'
         
+w_out_path.on_change('value_input', check_out_dir_exists)
+
+
+# Text box for specifying what the output file name should be
+w_out_name = TextInput(title="Output file name base:", 
+                       disabled=False, 
+                       sizing_mode="stretch_width")
+
+# Check boxes to select output file types
+w_checkbox_text = Paragraph(text="""Select output file types (more coming soon...)""")
+w_checkbox_out_type = CheckboxGroup(labels=['csv'], active=[0], disabled=True, sizing_mode="stretch_width")
+
+# Button to write refraction corrected data to output files
+w_save_button = Button(label='Save Data to Output', 
+                       disabled=True, 
+                       sizing_mode="stretch_width")
+
 def save_output():
-    csv_output_path = os.path.join(out_path_w.value, 
-                                   out_name_w.value + '.csv')
+    csv_output_path = os.path.join(w_out_path.value, 
+                                   w_out_name.value + '.csv')
     
     #combine surface data, bathy data, subsurface data
     df_comb = pd.concat([pd.DataFrame(bathy_src.data),
                          pd.DataFrame(sfc_src.data), 
                          pd.DataFrame(subsfc_src.data)])
     
-    if 0 in out_types_w.active:
+    if 0 in w_checkbox_out_type.active:
         # csv checked
         df_out = df_comb.loc[:, 
                              ['lon', 'lat', 
@@ -766,61 +764,319 @@ def save_output():
                               'surface_height','surface_sigma', 'dZ'] ]
         df_out.to_csv(csv_output_path, index=False)
         
-    save_out_w.button_type='success'
-    save_out_w.label='Output Saved!'
-    save_out_w.disabled=True
+    w_save_button.button_type='success'
+    w_save_button.label='Output Saved!'
+    w_save_button.disabled=True
     
     print()
     
+w_save_button.on_click(save_output)
+
+# Button to end the underlying bokeh server
+# need to add a lifecycle hook to close it on tab closure too
+w_quit_button = Button(label='END SESSION', 
+                       disabled=False, 
+                       button_type='danger', 
+                       sizing_mode="stretch_width")
+
 def close_app():
     sys.exit()
-                            
-file_in_w = FileInput(accept=".h5", sizing_mode="stretch_width")
-gt_w = RadioButtonGroup(labels=gt_labels, 
-                        disabled=True, sizing_mode="stretch_width")
     
-gt_w.on_change('active', select_profile)
-file_in_w.on_change('value', import_h5)
+w_quit_button.on_click(close_app)
 
-# Widget setup
-model_surface_w = Button(label='Model Water Surface', disabled=True, sizing_mode="stretch_width")
-model_surface_w.on_click(model_surface)
+w_status_box = Div(text="""status updates to go here...""",
+                   height=30)
 
-select_points_w = Button(label='Begin Point Selection', 
-                         disabled=True, 
-                         sizing_mode="stretch_width")
 
-select_points_w.on_click(select_bathy)
+# Widgets/callbacks for Sliderule query tab
+# w_date_slider = DateRangeSlider(value=(datetime.date(2020, 6, 1), datetime.date(2020, 7, 1)),
+#                                     start=datetime.date(2018, 9, 15), end=datetime.date.today())
 
-calc_refract_w = Button(label='Calculate Refraction', 
-                        disabled=True, 
-                        sizing_mode="stretch_width")
+w_date_picker_start = DatePicker(title='Start Date', 
+                                 value="2021-06-01", 
+                                 min_date="2018-09-15", 
+                                 max_date=datetime.date.today(),
+                                 width=150)
+w_date_picker_end = DatePicker(title='End Date', 
+                               value="2021-06-15", 
+                               min_date="2018-09-15", 
+                               max_date=datetime.date.today(), 
+                               width=150)
 
-calc_refract_w.on_click(correct_refraction)
+# when start date is selected, update min date possible in end widget
+def update_end_date_widget(attr, old, new):
+    w_date_picker_end.min_date = w_date_picker_start.value
+    
+w_date_picker_start.on_change('value', update_end_date_widget)
 
-out_text_w = Paragraph(text="""Select output file types (more coming soon...)""")
+# when end date is selected, update max date possible in start widget
+def update_start_date_widget(attr, old, new):
+    w_date_picker_start.max_date = w_date_picker_end.value
+    
+w_date_picker_end.on_change('value', update_start_date_widget)
 
-out_name_w = TextInput(title="Output file name base:", 
-                       disabled=False, 
-                       sizing_mode="stretch_width")
+# window to select bounding box
+# see figure call (fig_bbox) in format/plot section 
 
-out_path_w = TextInput(title="Output directory:", 
-                       value=os.getcwd(), 
-                       disabled=False, 
-                       sizing_mode="stretch_width")
+# this here doesnt actually work
+# def bbox_updated(attr, old, new):
+#     w_status_box.text = 'New bounding box selected...'
+    
+# bathy_src.on_change('data', bbox_updated)
 
-out_path_w.on_change('value_input', check_out_dir_exists)
+# which data release to download
+w_release_select = Select(title="Release Version:", value="005", options=["005"])
+w_surftype_select = Select(title='ATL03 Photon Surface Type', value='1', options=['0','1','2','3','4'])
 
-out_types_w = CheckboxGroup(labels=['csv'], active=[0], disabled=True, sizing_mode="stretch_width")
-save_out_w = Button(label='Save Data to Output', disabled=False, sizing_mode="stretch_width")
-save_out_w.on_click(save_output)
-quit_w = Button(label='QUIT', disabled=False, sizing_mode="stretch_width")
-quit_w.on_click(close_app)
-# Organizing layout
-left_half = column(file_in_w, gt_w, model_surface_w, select_points_w, 
-                   calc_refract_w, out_path_w, out_name_w, out_text_w, 
-                   out_types_w, save_out_w, quit_w, fig_imagery, 
-                   sizing_mode="fixed", height=800, width=panel_width)
+conf_list = ["atl03_tep", "atl03_not_considered", "atl03_background", "atl03_within_10m", "atl03_low", "atl03_medium", "atl03_high"]
 
-curdoc().add_root(row(left_half, fig_full_profile))
-curdoc().title = 'Manual Classification'
+w_conf_select = MultiChoice(title="ATL03 Photon Confidence", value = conf_list, options=conf_list)
+
+# button to finalize bounding box and begin query
+w_query_button = Button(label='Submit Query', 
+                         disabled=False, 
+                         button_type='success', 
+                         sizing_mode=None)
+
+def query_sliderule():
+
+    # first, convert bokeh height/width format to bbox corners
+    # upper left, bottom left, bottom right, upper right, upper left    
+    
+    x_wm_bbox = [bbox_src.data['x'][0] - bbox_src.data['w'][0]/2,
+           bbox_src.data['x'][0] - bbox_src.data['w'][0]/2,
+           bbox_src.data['x'][0] + bbox_src.data['w'][0]/2,
+           bbox_src.data['x'][0] + bbox_src.data['w'][0]/2,
+           bbox_src.data['x'][0] - bbox_src.data['w'][0]/2] 
+
+    y_wm_bbox = [bbox_src.data['y'][0] + bbox_src.data['h'][0]/2,
+           bbox_src.data['y'][0] - bbox_src.data['h'][0]/2,
+           bbox_src.data['y'][0] - bbox_src.data['h'][0]/2,
+           bbox_src.data['y'][0] + bbox_src.data['h'][0]/2,
+           bbox_src.data['y'][0] + bbox_src.data['h'][0]/2] 
+    
+    # convert bbox from web mercator to lat/lon
+    wgs84 = pyproj.crs.CRS.from_epsg(4979)
+    web_merc = pyproj.crs.CRS.from_epsg(3857)
+    tform = pyproj.transformer.Transformer.from_crs(crs_from=web_merc, crs_to=wgs84)
+
+    lat, lon = tform.transform(x_wm_bbox, y_wm_bbox)
+        
+    # actual querying code
+    url="icesat2sliderule.org"
+    icesat2.init(url, verbose=True, loglevel=logging.DEBUG)
+    asset = "nsidc-s3" 
+
+    # convert bbox corners to Sliderule compatible region data
+    sr_reg = icesat2.toregion( gpd.GeoDataFrame(geometry=gpd.points_from_xy(lon, lat)) )
+    
+    # Select release
+    time_start = datetime.datetime.strptime(w_date_picker_start.value, "%Y-%m-%d").date().strftime('%Y-%m-%dT%H:%M:%SZ')
+    time_end = datetime.datetime.strptime(w_date_picker_end.value, "%Y-%m-%d").date().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+    granules_list = icesat2.cmr(polygon=sr_reg[0], version=w_release_select.value, short_name='ATL03', 
+                                time_start=time_start, 
+                                time_end=time_end)
+    print(granules_list)
+    print(w_surftype_select.value, w_conf_select.value, w_release_select.value)
+    params = {}
+    params['poly'] = sr_reg[0]
+    params['srt'] = int(w_surftype_select.value)
+    params['cnf'] = w_conf_select.value
+    print('querying...')
+    gdf = icesat2.atl03sp(params, asset=asset, version=w_release_select.value, resources=granules_list)
+    print('DONE')
+    print(gdf.head())
+    
+    # ADD track lines to plot with hover tool
+    # coords/conversions
+    gdf.insert(0, 'lat', gdf.geometry.y, False) 
+    gdf.insert(0, 'lon', gdf.geometry.x, False)
+
+    # convert from wm to lat lon
+    wgs84 = pyproj.crs.CRS.from_epsg(4979)
+    web_merc = pyproj.crs.CRS.from_epsg(3857)
+    tform = pyproj.transformer.Transformer.from_crs(crs_from=wgs84, crs_to=web_merc)
+
+    x_wm, y_wm = tform.transform(gdf.lat, gdf.lon)
+    gdf.insert(0, 'x_wm', x_wm, False) 
+    gdf.insert(0, 'y_wm', y_wm, False)
+
+    gdf.reset_index(inplace=True)
+    
+    print('collecting data for multiline plotting...')
+    
+    # must speed this up, but ok for testing plots
+
+    data = dict(x=[], y=[], lon=[], lat=[], rgt=[], cycle=[], pair=[], track=[], date=[])
+
+    for rgt_ in gdf.rgt.unique():
+        for cycle_ in gdf.cycle.unique():
+            for pair_ in gdf.pair.unique():
+                for track_ in gdf.track.unique():
+                    print(rgt_, cycle_, pair_, track_)
+                    gdf_ = reduce_gdf(gdf, RGT=rgt_, track=track_, cycle=cycle_, pair=pair_)
+
+                    if gdf_.shape[0] > 0:
+                        # downsample...
+                        if gdf_.shape[0] > 10:
+                            #get evenly spaced indices of about 1,000 points
+                            gdf_ = gdf_.iloc[np.floor(np.linspace(0, gdf_.shape[0]-1, np.int64(10))), :]
+
+
+                        data['date'].append(gdf_.iloc[0].time.date())
+                        data['rgt'].append(rgt_)
+                        data['track'].append(track_)
+                        data['cycle'].append(cycle_)
+                        data['pair'].append(pair_)
+                        data['x'].append(gdf_.x_wm.values)
+                        data['y'].append(gdf_.y_wm.values)
+
+                        data['lat'].append(gdf_.lat.values)
+                        data['lon'].append(gdf_.lon.values)
+
+                    # append data array 
+    rake_src = ColumnDataSource(data)
+    glyph = MultiLine(xs="x", ys="y", line_width=2, line_color='lawngreen', name='track_rake')
+    gr = fig_bbox.add_glyph(rake_src, glyph)
+    hover = HoverTool(tooltips =[
+        ("Date", "@date"),
+        ("RGT", "@rgt"),
+        ("Cycle", "@cycle"),
+        ("Track", "@track"),
+        ("Pair", "@pair")
+        ])
+
+    fig_bbox.add_tools(hover)
+
+    # Make bbox invisible so it doesnt show up on hover tools
+    bb_render.visible = False
+
+w_query_button.on_click(query_sliderule)
+
+########################### FORMATTING / PLOTTING ##############################
+panel_width = 350
+panel_height = 800
+
+# Imagery window
+tile_provider = get_provider('ESRI_IMAGERY')
+
+fig_imagery = figure(title='', 
+                     x_range=(-6000000, 6000000), 
+                     y_range=(-1000000, 7000000),
+                     x_axis_type="mercator", 
+                     y_axis_type="mercator", 
+                     tools='zoom_in,zoom_out,pan,box_zoom,wheel_zoom,undo,redo,reset,', sizing_mode="stretch_height", 
+                     width=panel_width, toolbar_location='below')
+
+fig_imagery.add_tile(tile_provider, name='tile_renderer', visible=False)
+trackline = fig_imagery.line(x='x_wm', y='y_wm', source=src_gt, color='red', line_width=1)
+
+# Bounding box selection window
+fig_bbox = figure(x_range=(-9240000, -8460000), 
+                  y_range=(2450000, 3000000),
+                  x_axis_type="mercator", 
+                  y_axis_type="mercator", 
+                  tools='zoom_in,zoom_out,pan,box_zoom,wheel_zoom,undo,redo,reset', height=350, sizing_mode='stretch_width')
+fig_bbox.add_tile(tile_provider)
+
+bb_render = fig_bbox.rect(x="x", y="y", width="w", height="h", source=bbox_src, 
+                          color='red', fill_alpha=0.1, line_width=5)
+
+box_edit_tool = BoxEditTool(renderers=[bb_render], num_objects=1)
+fig_bbox.add_tools(box_edit_tool)
+# fig_bbox.toolbar.active_drag = box_edit_tool
+
+
+# Primary window 
+fig_primary = figure(title='', 
+                     tools='zoom_in,zoom_out,pan,box_zoom,wheel_zoom,undo,redo,reset,lasso_select',
+                          sizing_mode="scale_width", height=500,
+                          x_axis_type='mercator', x_range=fig_imagery.y_range)#, x_range=fig_imagery.y_range)
+
+    # initialize glyphs from data so that changes to data update plots automatically
+
+# plots are actually using web-mercator coords under the hood
+# helps with mapping axes to the imagery window 
+
+wm_axis = 'y_wm'
+
+fig_primary.circle(x=wm_axis, y='height_ortho', 
+                        source=plt_src, size=0.5,
+                        color='black')
+
+fig_primary.circle(x=wm_axis, 
+                        y='height_ortho', 
+                        source=sfc_src, 
+                        size=0.5,
+                        color='blue', 
+                        legend_label='Water Surface (Class {})'.format(surface_class))
+
+fig_primary.line(x=wm_axis, y='surface_height', source=plt_src, 
+                        color='lime', line_width=3,
+                        name='surface_model')
+
+fig_primary.circle(x=wm_axis, 
+                        y='height_ortho',
+                        source=subsfc_src,
+                        size=0.5,
+                        color='grey', 
+                        legend_label='Subsurface Noise (Class {})'.format(no_bottom_class), 
+                        name='subsurface',
+                        selection_color='red',
+                        selection_fill_alpha=1,
+                        selection_line_color='red',
+                        nonselection_fill_alpha=0.9,
+                        nonselection_line_color='black',
+                        nonselection_fill_color="black")
+
+fig_primary.circle(x=wm_axis, 
+                        y='height_ortho',
+                        source=bathy_src,
+                        size=0.5,
+                        color='black', 
+                        legend_label='Uncorrected Bathymetry (Class {})'.format(bathy_class))
+
+fig_primary.circle(x=wm_axis, 
+                        y='height_ortho_c',
+                        source = bathy_src,
+                        size=0.5,
+                        color='red', 
+                        legend_label='Bathymetry, Refraction Corrected'.format(bathy_class))
+
+fig_primary.legend.location = "bottom_left"
+fig_primary.legend.visible = False
+
+# Organizing layout of widgets
+left_column = column(w_file_input, w_gt_select, w_surface_button, w_select_button, 
+                   w_refract_button, w_out_path, w_out_name, w_checkbox_text, 
+                   w_checkbox_out_type, w_save_button, w_quit_button, fig_imagery, 
+                   sizing_mode="fixed", height=panel_height, width=panel_width)
+
+sliderule_layout=column(fig_bbox,
+                        row(w_date_picker_start, w_date_picker_end, w_release_select, w_surftype_select),
+                        w_conf_select,
+                        w_query_button) # 
+
+# combining layouts into panels
+sliderule_panel = Panel(child=sliderule_layout, title='Data Source')
+
+fig_primary_panel = Panel(child=fig_primary, title='Photon Cloud')
+
+# combining panels into a tab unit
+window_tabs = Tabs(tabs=[fig_primary_panel, sliderule_panel])
+
+# callback that triggers when the user activates different tabs
+def tab_switched(attr, old, new):
+    if window_tabs.active == 1:
+        w_status_box.text = '''Select box edit tool on right, hold shift, then click and drag anywhere on the plot or double tap once to start drawing. 
+        Move the mouse and double tap again to finish drawing bounding box. '''
+        
+window_tabs.on_change('active', tab_switched)
+
+
+right_column = column(w_status_box, window_tabs, sizing_mode="stretch_width")
+
+curdoc().add_root(row(left_column, right_column))
+curdoc().title = 'OpenOceans Manual Classification Tool'
