@@ -15,14 +15,14 @@ The labeling tool is almost entirely contained within the `manual_tool.py` Pytho
 It's recommended to use conda or a similar package manager for configuring a development environment. Once conda is configured for your system, you can use the `environment.yml` file included in this repository and the following command to create a conda environment called 'openoceans' with the required dependencies.
 
 ```
-    conda env create -n openoceans --file environment.yml
+conda env create -n openoceans --file environment.yml
 ```
 
 ### Starting the Tool
 The OpenOceans manual labeling tool is implemented as a [bokeh](https://docs.bokeh.org/en/latest/index.html) app which can be run from the terminal with a single command.
 
 ```
-    bokeh serve --show manual_tool.py --websocket-max-message-size=300000000
+bokeh serve --show manual_tool.py --websocket-max-message-size=300000000
 ```
 
 What is this actually doing? The command `bokeh serve --show manual_tool.py` initializes a bokeh server to run the app within the python script `manual_tool.py` and shows the app in the browser window. 
