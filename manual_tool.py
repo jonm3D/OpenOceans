@@ -869,91 +869,91 @@ def bkapp(doc):
         icesat2.init(url, verbose=True, loglevel=logging.DEBUG)
         asset = "nsidc-s3" 
 
-        # convert bbox corners to Sliderule compatible region data
-        sr_reg = icesat2.toregion( gpd.GeoDataFrame(geometry=gpd.points_from_xy(lon, lat)) )
+        # # convert bbox corners to Sliderule compatible region data
+        # sr_reg = icesat2.toregion( gpd.GeoDataFrame(geometry=gpd.points_from_xy(lon, lat)) )
 
-        # Select release
-        time_start = datetime.datetime.strptime(w_date_picker_start.value, "%Y-%m-%d").date().strftime('%Y-%m-%dT%H:%M:%SZ')
-        time_end = datetime.datetime.strptime(w_date_picker_end.value, "%Y-%m-%d").date().strftime('%Y-%m-%dT%H:%M:%SZ')
+#         # Select release
+#         time_start = datetime.datetime.strptime(w_date_picker_start.value, "%Y-%m-%d").date().strftime('%Y-%m-%dT%H:%M:%SZ')
+#         time_end = datetime.datetime.strptime(w_date_picker_end.value, "%Y-%m-%d").date().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+#         print('***** CMR')
+#         granules_list = icesat2.cmr(polygon=sr_reg[0], version=w_release_select.value, short_name='ATL03', 
+#                                     time_start=time_start, 
+#                                     time_end=time_end)
+#         print(granules_list)
+#         print(w_surftype_select.value, w_conf_select.value, w_release_select.value)
+#         params = {}
+#         params['poly'] = sr_reg[0]
+#         params['srt'] = int(w_surftype_select.value)
+#         params['cnf'] = w_conf_select.value
+#         print('querying...')
+#         gdf = icesat2.atl03sp(params, asset=asset, version=w_release_select.value, resources=granules_list)
+#         print('DONE')
+#         print(gdf.head())
+
+#         # ADD track lines to plot with hover tool
+#         # coords/conversions
+#         gdf.insert(0, 'lat', gdf.geometry.y, False) 
+#         gdf.insert(0, 'lon', gdf.geometry.x, False)
+
+#         # convert from wm to lat lon
+#         wgs84 = pyproj.crs.CRS.from_epsg(4979)
+#         web_merc = pyproj.crs.CRS.from_epsg(3857)
+#         tform = pyproj.transformer.Transformer.from_crs(crs_from=wgs84, crs_to=web_merc)
+
+#         x_wm, y_wm = tform.transform(gdf.lat, gdf.lon)
+#         gdf.insert(0, 'x_wm', x_wm, False) 
+#         gdf.insert(0, 'y_wm', y_wm, False)
+
+#         gdf.reset_index(inplace=True)
+
+#         print('collecting data for multiline plotting...')
+
+#         # must speed this up, but ok for testing plots
+
+#         data = dict(x=[], y=[], lon=[], lat=[], rgt=[], cycle=[], pair=[], track=[], date=[])
+
+#         for rgt_ in gdf.rgt.unique():
+#             for cycle_ in gdf.cycle.unique():
+#                 for pair_ in gdf.pair.unique():
+#                     for track_ in gdf.track.unique():
+#                         print(rgt_, cycle_, pair_, track_)
+#                         gdf_ = reduce_gdf(gdf, RGT=rgt_, track=track_, cycle=cycle_, pair=pair_)
+
+#                         if gdf_.shape[0] > 0:
+#                             # downsample...
+#                             if gdf_.shape[0] > 10:
+#                                 #get evenly spaced indices of about 1,000 points
+#                                 gdf_ = gdf_.iloc[np.floor(np.linspace(0, gdf_.shape[0]-1, np.int64(10))), :]
 
 
-        granules_list = icesat2.cmr(polygon=sr_reg[0], version=w_release_select.value, short_name='ATL03', 
-                                    time_start=time_start, 
-                                    time_end=time_end)
-        print(granules_list)
-        print(w_surftype_select.value, w_conf_select.value, w_release_select.value)
-        params = {}
-        params['poly'] = sr_reg[0]
-        params['srt'] = int(w_surftype_select.value)
-        params['cnf'] = w_conf_select.value
-        print('querying...')
-        gdf = icesat2.atl03sp(params, asset=asset, version=w_release_select.value, resources=granules_list)
-        print('DONE')
-        print(gdf.head())
+#                             data['date'].append(gdf_.iloc[0].time.date())
+#                             data['rgt'].append(rgt_)
+#                             data['track'].append(track_)
+#                             data['cycle'].append(cycle_)
+#                             data['pair'].append(pair_)
+#                             data['x'].append(gdf_.x_wm.values)
+#                             data['y'].append(gdf_.y_wm.values)
 
-        # ADD track lines to plot with hover tool
-        # coords/conversions
-        gdf.insert(0, 'lat', gdf.geometry.y, False) 
-        gdf.insert(0, 'lon', gdf.geometry.x, False)
+#                             data['lat'].append(gdf_.lat.values)
+#                             data['lon'].append(gdf_.lon.values)
 
-        # convert from wm to lat lon
-        wgs84 = pyproj.crs.CRS.from_epsg(4979)
-        web_merc = pyproj.crs.CRS.from_epsg(3857)
-        tform = pyproj.transformer.Transformer.from_crs(crs_from=wgs84, crs_to=web_merc)
+#                         # append data array 
+#         rake_src = ColumnDataSource(data)
+#         glyph = MultiLine(xs="x", ys="y", line_width=2, line_color='lawngreen', name='track_rake')
+#         gr = fig_bbox.add_glyph(rake_src, glyph)
+#         hover = HoverTool(tooltips =[
+#             ("Date", "@date"),
+#             ("RGT", "@rgt"),
+#             ("Cycle", "@cycle"),
+#             ("Track", "@track"),
+#             ("Pair", "@pair")
+#             ])
 
-        x_wm, y_wm = tform.transform(gdf.lat, gdf.lon)
-        gdf.insert(0, 'x_wm', x_wm, False) 
-        gdf.insert(0, 'y_wm', y_wm, False)
+#         fig_bbox.add_tools(hover)
 
-        gdf.reset_index(inplace=True)
-
-        print('collecting data for multiline plotting...')
-
-        # must speed this up, but ok for testing plots
-
-        data = dict(x=[], y=[], lon=[], lat=[], rgt=[], cycle=[], pair=[], track=[], date=[])
-
-        for rgt_ in gdf.rgt.unique():
-            for cycle_ in gdf.cycle.unique():
-                for pair_ in gdf.pair.unique():
-                    for track_ in gdf.track.unique():
-                        print(rgt_, cycle_, pair_, track_)
-                        gdf_ = reduce_gdf(gdf, RGT=rgt_, track=track_, cycle=cycle_, pair=pair_)
-
-                        if gdf_.shape[0] > 0:
-                            # downsample...
-                            if gdf_.shape[0] > 10:
-                                #get evenly spaced indices of about 1,000 points
-                                gdf_ = gdf_.iloc[np.floor(np.linspace(0, gdf_.shape[0]-1, np.int64(10))), :]
-
-
-                            data['date'].append(gdf_.iloc[0].time.date())
-                            data['rgt'].append(rgt_)
-                            data['track'].append(track_)
-                            data['cycle'].append(cycle_)
-                            data['pair'].append(pair_)
-                            data['x'].append(gdf_.x_wm.values)
-                            data['y'].append(gdf_.y_wm.values)
-
-                            data['lat'].append(gdf_.lat.values)
-                            data['lon'].append(gdf_.lon.values)
-
-                        # append data array 
-        rake_src = ColumnDataSource(data)
-        glyph = MultiLine(xs="x", ys="y", line_width=2, line_color='lawngreen', name='track_rake')
-        gr = fig_bbox.add_glyph(rake_src, glyph)
-        hover = HoverTool(tooltips =[
-            ("Date", "@date"),
-            ("RGT", "@rgt"),
-            ("Cycle", "@cycle"),
-            ("Track", "@track"),
-            ("Pair", "@pair")
-            ])
-
-        fig_bbox.add_tools(hover)
-
-        # Make bbox invisible so it doesnt show up on hover tools
-        bb_render.visible = False
+#         # Make bbox invisible so it doesnt show up on hover tools
+#         bb_render.visible = False
 
     w_query_button.on_click(query_sliderule)
 
@@ -1079,7 +1079,6 @@ def bkapp(doc):
 
 
     right_column = column(w_status_box, window_tabs, sizing_mode="stretch_width")
-    print('this is the end')
     doc.add_root(row(left_column, right_column))
     doc.title = 'OpenOceans Manual Classification Tool'
 
