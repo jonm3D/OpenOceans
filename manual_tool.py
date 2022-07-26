@@ -1100,7 +1100,7 @@ fig_bbox.add_tools(box_edit_tool)
 # Primary window 
 fig_primary = figure(title='', 
                      tools='zoom_in,zoom_out,pan,box_zoom,wheel_zoom,undo,redo,reset,lasso_select',
-                          sizing_mode="scale_width", height=500,
+                          sizing_mode="stretch_both",# height=500,
                           x_axis_type='mercator', x_range=fig_imagery.y_range)#, x_range=fig_imagery.y_range)
 
     # initialize glyphs from data so that changes to data update plots automatically
