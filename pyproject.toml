@@ -1,30 +1,13 @@
-[build-system]
-requires = [
-    "bokeh >= 2.4",
-    "sliderule >= 1.4.0",
-    "pyproj >= 3.3.0",
-    "tqdm",
-    "pybase64",
-    "pathlib",
-    "geopandas",
-    "pandas",
-    "numpy"
-    "scipy >= 1.8.0",
-    "astropy >= 5.0"
-]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "open_oceans"
 version = "0.0.1"
 description = "OpenOceans helps you use bathymetric data from NASA's ICESat-2 Mission."
 requires-python = ">=3.9"
 authors = [
-    "Jonathan Markel <jonathanmarkel@gmail.com>"
+    { name="Jonathan Markel", email="jonathanmarkel@gmail.com" },
 ]
-license = "GPL-3.0-or-later"
+license = { file="LICENSE.md" }
 readme = "README.md"
-homepage = "https://github.com/jonm3D/OpenOceans"
 
 keywords = ["icesat-2", "bathymetry", "geospatial", "altimetry", "lidar"]
 
@@ -33,3 +16,16 @@ classifiers = [
     "Topic :: Scientific/Engineering"
 ]
 
+[build-system]
+requires = [
+    "pdm-pep517",
+    "sliderule==1.4.0",
+    "bokeh==2.4.2",
+    "pyproj==3.3.0",
+    "tqdm",
+    "pybase64",
+    "pathlib",
+    "astropy"
+    ]
+
+build-backend = "pdm.pep517.api"
