@@ -2,7 +2,7 @@
 
 OpenOceans is a repository of tools for ICESat-2 bathymetry science.
 
-You've found this while its still under development! Things may not work exactly as intended while bugs get ironed out.  
+You've found this while its still under development! You will almost certainly find a bug or two, feel free to submit an issue.    
 
 Made with ❤️ and ☕️ by:
 
