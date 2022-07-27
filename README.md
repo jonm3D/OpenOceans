@@ -98,4 +98,6 @@ Clicking the `Calculate Refraction` button computes this correction (or approxim
 #### Output Data
 Output filenames are automatically generated from track info such as the date and ground track. However, these can be manually set by the user prior to saving the output. Similarly, unless reset by the user, data will be saved to the directory from which the app was originally run. 
 
-Photon data corresponding to water surface, seabed, and subsurface (no bottom detected) labels are output to a CSV when the user clicks `Save Data to Output`. For seabed classified photons, the output data includes the column ‘dZ’, which can be added to the ‘height’ or ‘height_ortho’ columns to get refraction corrected depths referenced to WGS84 or EGM08, respectively.
+Photon data corresponding to water surface, seabed, and subsurface (no bottom detected) labels are output to a CSV when the user clicks `Save Data to Output`. This button will turn green when data has been saved. 
+
+For seabed classified photons, the output data includes the column ‘dZ’, which can be added to the ‘height’ or ‘height_ortho’ columns to get refraction corrected depths referenced to WGS84 or EGM08, respectively. 
