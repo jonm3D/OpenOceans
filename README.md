@@ -51,6 +51,8 @@ The tool window can be broken up into several key elements.
 3. Above the primary window is a __Status Update__ box for communicating important information to the user. 
 4. On the bottom left is the __Preview__ window, which will display the selected ICESat-2 track over an imagery basemap. This will dynamically update with the primary window.
 
+<img src="img/profile_window_full.png" alt="API Query Window" width="500"/>
+
 #### Using ATL03 H5 Files
 ICESat-2 photon elevation data is typically provided by NSIDC and EarthData in the form of ATL03 H5 files. These files can be read into the labeler from local storage using the `choose file` input button in the upper left upon start up. This may take a moment for larger files, and the terminal will show an updating progress bar as each of the 6 beams are loaded. Once all data has been read, the user will be able to select a beam ('gt1r', 'gt2l', etc...) from the buttons on the top left of the window. Selecting a profile will load the corresponding photon data into the __Primary__ window.
 
@@ -58,6 +60,8 @@ ICESat-2 photon elevation data is typically provided by NSIDC and EarthData in t
 Alternatively, it can also be useful to pull ICESat-2 data from NASA servers, rather than storing it locally. This can be done using the API QUERY functionality built into the OpenOcean manual labeling tool. 
 
 > TIP: Using the API query can take a long time depending on the size of your query, your network connection, your computers memory, and more. It is **highly** recomended to start with a relatvely small bounding box and time window (several weeks to a month) first before making larger data requests. When in doubt, only download what you need!
+
+<img src="img/sliderule_pane_w_tracks.png" alt="API Query Window" width="500"/>
 
 0. Select the *API QUERY* tab. Note that this tab contains an __Bounding Box Selection__ imagery window - this is separate from the __Preview__ window. Also, the `choose file` button has been replaced with two drop down menus to select by a profile's overpass date and by more detailed track info, including the reference ground track (RGT), cycle number, beam pair, and beam track.
 
@@ -94,6 +98,8 @@ The refraction of light when passing between mediums means that the underwater p
 When available, the spacecraft orientation parameters *ref_azimuth* and *ref_elevation* are used in the refraction correction. These are generally available when ATL03 H5 files have been downloaded already from NSIDC or NASA EarthData.  However, API Querying is not currently able to return these parameters. When they are unavailable, a first order approximation is used to calculate the refraction correction which does not account for spacecraft geometry. In most cases, the loss of fidelity due to this approximation is negligible - errors are instead driven by the accuracy of the water surface model. 
 
 Clicking the `Calculate Refraction` button computes this correction (or approximation thereof) as described in [Parrish et al 2019](https://doi.org/10.3390/rs11141634). 
+
+<img src="img/refraction_corrected.png" alt="API Query Window" width="500"/>
 
 #### Output Data
 Output filenames are automatically generated from track info such as the date and ground track. However, these can be manually set by the user prior to saving the output. Similarly, unless reset by the user, data will be saved to the directory from which the app was originally run. 
