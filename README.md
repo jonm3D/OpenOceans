@@ -55,7 +55,7 @@ The tool window can be broken up into several key elements.
 ICESat-2 photon elevation data is typically provided by NSIDC and EarthData in the form of ATL03 H5 files. These files can be read into the labeler from local storage using the `choose file` input button in the upper left upon start up. This may take a moment for larger files, and the terminal will show an updating progress bar as each of the 6 beams are loaded. Once all data has been read, the user will be able to select a beam ('gt1r', 'gt2l', etc...) from the buttons on the top left of the window. Selecting a profile will load the corresponding photon data into the __Primary__ window.
 
 #### Using API Querying
-It can also be useful to pull ICESat-2 data from NASA servers, rather than storing it locally. This can be done using the API QUERY functionality built into the OpenOcean manual labeling tool. 
+Alternatively, it can also be useful to pull ICESat-2 data from NASA servers, rather than storing it locally. This can be done using the API QUERY functionality built into the OpenOcean manual labeling tool. 
 
 > TIP: Using the API query can take a long time depending on the size of your query, your network connection, your computers memory, and more. It is **highly** recomended to start with a relatvely small bounding box and time window (several weeks to a month) first before making larger data requests. When in doubt, only download what you need!
 
@@ -69,5 +69,25 @@ It can also be useful to pull ICESat-2 data from NASA servers, rather than stori
 
 4. Click the Submit Query button to start downloading data. It is very likely that this will take at least several minutes, so please be patient! Once all the requested photon data has been downloaded, it is reformatted and the tracks are plotted in the same window as the bounding box.
 
-5. Select an ICESat-2 profile. Hovering the mouse over the new tracks in your bounding box will tell you which date, reference ground track (RGT) and other details correspond to that specific profile. These details have been populated in the two drop down windows on the left ('Date', and 'RGT, CYCLE...'). 
+5. Select an ICESat-2 profile. Hovering the mouse over the new tracks in your bounding box will tell you which date, reference ground track (RGT) and other details correspond to that specific profile. These details have been populated in the two drop down windows on the left ('Date', and 'RGT, CYCLE...'). Selecting a specific profile will load the photon data into the Photon Cloud tab.
 
+#### Water Surface Modeling
+Once an ICESat-2 profile has been successfully loaded into the Photon Cloud window, the button to `Model Water Surface` is available to click. Activating this button will overlay a green line over the approximate water surface. 
+
+An estimate of the local water surface is needed to calculate the water depth and the refraction correction. There are many ways to determine this water surface value - taking into account features like waves, tides, and more. However, this work has been focused on the developing basic labeling capabilities, and thus we use a simplified water surface model as follows:
+
+- Step along track at ~20m intervals.
+- At each step, collect all photons within 400m on either side (total of 800m along track processing chunks).
+- Compute a histogram for all elevation data in this chunk, at 0.1m resolution.
+- The center of the elevation bin with the most photons is determined to be the elevation of the water surface.
+
+This is a highly simplified model of the water surface that is prone to oversmoothing waves, classifying land as water surface, and mislabeling noise as the surface when lacking a strong return. However, given that we are interested in bathymetry - where it is required that a strong water surface return exists above a seabed return - this approach is generally okay for calculating depths in open water and more than 400m off shore in the along track direction.
+
+#### Seabed Point Selection
+Click `Begin Point Selection` to begin the step of labeling seabed photons. This will temporarily remove all data above and within the water surface. 
+
+Click the Lasso Tool on the right of the photon cloud. Click and drag the mouse to encircle any seabed returns for which you would like to calculate refracted depths. Repeat this step while holding down Shift to make multiple selections.
+
+#### Refraction Correction
+
+#### Output Data
