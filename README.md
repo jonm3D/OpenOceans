@@ -86,8 +86,16 @@ This is a highly simplified model of the water surface that is prone to oversmoo
 #### Seabed Point Selection
 Click `Begin Point Selection` to begin the step of labeling seabed photons. This will temporarily remove all data above and within the water surface. 
 
-Click the Lasso Tool on the right of the photon cloud. Click and drag the mouse to encircle any seabed returns for which you would like to calculate refracted depths. Repeat this step while holding down Shift to make multiple selections.
+Click the Lasso Tool on the right of the photon cloud. Click and drag the mouse to encircle any seabed returns for which you would like to calculate refracted depths. Repeat this step while holding down Shift to make multiple selections. When you are satisfied with your selection, continue on to the refraction correction step. 
 
 #### Refraction Correction
+The refraction of light when passing between mediums means that the underwater photon depths measured by ICESat-2 are not accurate like above water data - we must apply a refraction correction. The magnitude of this correction is determined by several factors including the spacecraft orientation, salinity of the water, and most importantly the height of the water surface. 
+
+When available, the spacecraft orientation parameters *ref_azimuth* and *ref_elevation* are used in the refraction correction. These are generally available when ATL03 H5 files have been downloaded already from NSIDC or NASA EarthData.  However, API Querying is not currently able to return these parameters. When they are unavailable, a first order approximation is used to calculate the refraction correction which does not account for spacecraft geometry. In most cases, the loss of fidelity due to this approximation is negligible - errors are instead driven by the accuracy of the water surface model. 
+
+Clicking the `Calculate Refraction` button computes this correction (or approximation thereof) as described in [Parrish et al 2019](https://doi.org/10.3390/rs11141634). 
 
 #### Output Data
+Output filenames are automatically generated from track info such as the date and ground track. However, these can be manually set by the user prior to saving the output. Similarly, unless reset by the user, data will be saved to the directory from which the app was originally run. 
+
+Photon data corresponding to water surface, seabed, and subsurface (no bottom detected) labels are output to a CSV when the user clicks `Save Data to Output`. For seabed classified photons, the output data includes the column ‘dZ’, which can be added to the ‘height’ or ‘height_ortho’ columns to get refraction corrected depths referenced to WGS84 or EGM08, respectively.
