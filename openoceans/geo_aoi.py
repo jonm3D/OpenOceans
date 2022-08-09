@@ -6,6 +6,7 @@ import warnings
 from ipyleaflet import Map, basemaps, DrawControl
 from ipyleaflet import Polygon as IPyPolygon
 from IPython.display import display
+from IPython import get_ipython
 
 class GeoAOI:
     # stores a bounding box and has basic io/viz methods
@@ -172,7 +173,4 @@ class GeoAOI:
 
 
 if __name__ == "__main__":
-    print("executed when directly run")
-    bb = Bbox.from_geojson('../poly.geojson')
-
-    print(':o')
+    pass
