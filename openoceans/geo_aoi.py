@@ -1,4 +1,3 @@
-from operator import is_not
 import geopandas as gpd
 from shapely.geometry import Polygon, mapping
 import simplekml
@@ -6,7 +5,7 @@ import warnings
 from ipyleaflet import Map, basemaps, DrawControl
 from ipyleaflet import Polygon as IPyPolygon
 from IPython.display import display
-from IPython import get_ipython
+from utils import _is_notebook
 
 class GeoAOI:
     # stores a bounding box and has basic io/viz methods
@@ -101,26 +100,13 @@ class GeoAOI:
         p = Polygon(list(zip(x, y)))
         return cls(p)
 
-    @staticmethod
-    def _is_notebook():
-        try:
-            shell = get_ipython().__class__.__name__
-            if shell == 'ZMQInteractiveShell':
-                return True   # Jupyter notebook or qtconsole
-            elif shell == 'TerminalInteractiveShell':
-                return False  # Terminal running IPython
-            else:
-                return False  # Other type (?)
-        except NameError:
-            return False      # Probably standard Python interpreter
-
     @classmethod
     def from_drawing(cls):
 
         bb = cls()
 
         # check that we're in a notebook/ipython environment
-        is_nb = cls._is_notebook()
+        is_nb = _is_notebook()
 
         if is_nb == False:
             warnings.warn(
