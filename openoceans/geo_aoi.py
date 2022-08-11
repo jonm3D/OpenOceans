@@ -5,7 +5,6 @@ import warnings
 from ipyleaflet import Map, basemaps, DrawControl
 from ipyleaflet import Polygon as IPyPolygon
 from IPython.display import display
-from utils import _is_notebook
 
 class GeoAOI:
     # stores a bounding box and has basic io/viz methods
@@ -159,4 +158,8 @@ class GeoAOI:
 
 
 if __name__ == "__main__":
-    pass
+    from utils import _is_notebook
+
+else:
+    from .utils import _is_notebook
+

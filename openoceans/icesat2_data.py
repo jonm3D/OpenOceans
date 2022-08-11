@@ -1,4 +1,3 @@
-from utils import _is_notebook
 from cgitb import strong
 import re
 import numpy as np
@@ -18,7 +17,6 @@ from bokeh.io import show, output_notebook
 from bokeh.layouts import row
 from bokeh.tile_providers import get_provider
 tile_provider = get_provider('ESRI_IMAGERY')
-
 
 def beam_info(gtxx, sc_orient):
 
@@ -419,7 +417,7 @@ Photons Returned: {self.data.shape[0]}
         '''Export photon data to LAS 1.4'''
         pass
 
-    def explore(self):
+    def explore(self, force_html=False):
         '''Open bokeh plot of track photons vs imagery'''
         # should open html if run from terminal, widget if notebook
 
@@ -435,24 +433,34 @@ Photons Returned: {self.data.shape[0]}
         y_wm, x_wm = tform.transform(
             self.data.geometry.y, self.data.geometry.x)
         h = self.data.height
-        title_string = p.info['date'].strftime(
-            '%Y/%m/%d') + ' ' + p.info['beam_strength'].upper() + ' BEAM, PAIR ' + str(p.info['track_pair'])
+        title_string = self.info['date'].strftime(
+            '%Y/%m/%d') + ' ' + self.info['beam_strength'].upper() + ' BEAM, PAIR ' + str(self.info['track_pair'])
         fig_map = figure(title=title_string,
                          x_range=(min(y_wm), max(y_wm)),
                          y_range=(min(x_wm)-(max(y_wm)-min(y_wm)) * 0.2,
                                   max(x_wm)+(max(y_wm)-min(y_wm)) * 0.2),  # zooms out proportionally
                          #  width=400, height=400,
+                         sizing_mode='stretch_both',
                          x_axis_type="mercator", y_axis_type="mercator", tools='zoom_in, zoom_out, wheel_zoom, pan')
         fig_map.add_tile(tile_provider)
         fig_map.line(y_wm, x_wm, color='red', line_width=1)
 
         fig = figure(x_axis_type="mercator",
                      #  width=400, height=400,
+                     sizing_mode='stretch_both',
                      x_range=fig_map.y_range, tools='zoom_in,zoom_out,pan,box_zoom,wheel_zoom, undo, redo')
 
         fig.circle(x_wm, h, size=0.15, color='black')
 
         fig_grid = row([fig_map, fig])
+
+        is_nb = _is_notebook()
+
+        print(is_nb)
+        
+        if is_nb and not force_html:
+            output_notebook()
+
         show(fig_grid)
 
     def label_photons(self):
@@ -461,9 +469,11 @@ Photons Returned: {self.data.shape[0]}
 
 
 if __name__ == "__main__":
-
+    from utils import _is_notebook
     h5_filepath = "/Users/jonathan/Documents/Research/OpenOceans_Public/demos/data/ATL03_20210817155409_08401208_005_01.h5"
 
     p = Profile.from_h5(h5_filepath, 'gt1r')
     print(p)
-    pass
+
+else:
+    from .utils import _is_notebook
