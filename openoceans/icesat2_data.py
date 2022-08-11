@@ -358,6 +358,20 @@ Photons Returned: {self.data.shape[0]}
 
                 bar.update(7)
 
+                df.insert(0, 'lat', df.geometry.y, False) 
+                df.insert(0, 'lon', df.geometry.x, False)
+
+                # wgs84 = pyproj.crs.CRS.from_epsg(4979)
+                # wgs84_egm08 = pyproj.crs.CRS.from_epsg(3855)
+                # tform = pyproj.transformer.Transformer.from_crs(crs_from=wgs84, crs_to=wgs84_egm08)
+                # _, _, z_g = tform.transform(df.geometry.y, df.geometry.x, df.height)
+
+                # df.insert(0, 'height_ortho', z_g, False) 
+
+                # allocation of to be used arrays
+                df.insert(0, 'classification', 
+                          np.int64(np.zeros_like(df.geometry.x)), False)
+
                 track_info_dict = {'date': df.index[0].date(),
                                    'rgt': anc['rgt'],
                                    'gtxx': gtxx,
@@ -378,6 +392,8 @@ Photons Returned: {self.data.shape[0]}
         cc = str(self.info['cycle']).zfill(2)
         rel = self.info['release']
         return "ATL03_{}{}_{}{}{}_{}".format(date, '*', rgt, cc, '*', rel)
+
+
 
     @staticmethod
     def _convert_seg_to_ph_res(segment_res_data,
@@ -402,9 +418,6 @@ Photons Returned: {self.data.shape[0]}
 
         return ph_res_data.values
 
-    def _subsample(self, km_step=1):
-        '''Subsample the data frame at a '''
-
     def to_kml(self):
         '''Export track metadata and lon/lat (no elevations) at x km along track to kml'''
         pass
@@ -417,22 +430,28 @@ Photons Returned: {self.data.shape[0]}
         '''Export photon data to LAS 1.4'''
         pass
 
-    def explore(self, force_html=False):
+    def explore(self):
         '''Open bokeh plot of track photons vs imagery'''
         # should open html if run from terminal, widget if notebook
 
         # subsample photon data for quicker plotting? simpler seems easier for now
-
-        # esri imagery not showing up
+        df = self.data.loc[:, ['segment_id', 'lat', 'lon']]
+        df_ = df.groupby('segment_id').median()
 
         # convert sampled gdf lat lon to web mercator for plotting
         wgs84 = pyproj.crs.CRS.from_epsg(4979)
         web_merc = pyproj.crs.CRS.from_epsg(3857)
         tform = pyproj.transformer.Transformer.from_crs(
             crs_from=wgs84, crs_to=web_merc)
+        # underscore denotes subsampled datarate
+        y_wm_, x_wm_ = tform.transform(
+            df_.lat, df_.lon)
+
         y_wm, x_wm = tform.transform(
             self.data.geometry.y, self.data.geometry.x)
         h = self.data.height
+
+        # plot trackline over imagery
         title_string = self.info['date'].strftime(
             '%Y/%m/%d') + ' ' + self.info['beam_strength'].upper() + ' BEAM, PAIR ' + str(self.info['track_pair'])
         fig_map = figure(title=title_string,
@@ -441,25 +460,24 @@ Photons Returned: {self.data.shape[0]}
                                   max(x_wm)+(max(y_wm)-min(y_wm)) * 0.2),  # zooms out proportionally
                          #  width=400, height=400,
                          sizing_mode='stretch_both',
-                         x_axis_type="mercator", y_axis_type="mercator", tools='zoom_in, zoom_out, wheel_zoom, pan')
-        fig_map.add_tile(tile_provider)
-        fig_map.line(y_wm, x_wm, color='red', line_width=1)
+                         x_axis_type="mercator", y_axis_type="mercator", 
+                         tools='zoom_in, zoom_out, wheel_zoom, pan')
 
+        fig_map.add_tile(tile_provider)
+
+        fig_map.line(y_wm_, x_wm_, color='red', line_width=1)
+
+        # plot photon data
         fig = figure(x_axis_type="mercator",
                      #  width=400, height=400,
                      sizing_mode='stretch_both',
-                     x_range=fig_map.y_range, tools='zoom_in,zoom_out,pan,box_zoom,wheel_zoom, undo, redo')
+                     x_range=fig_map.y_range, 
+                     tools='zoom_in,zoom_out,pan,box_zoom,wheel_zoom, undo, redo')
 
         fig.circle(x_wm, h, size=0.15, color='black')
 
+        # format layout and show
         fig_grid = row([fig_map, fig])
-
-        is_nb = _is_notebook()
-
-        print(is_nb)
-        
-        if is_nb and not force_html:
-            output_notebook()
 
         show(fig_grid)
 
@@ -474,6 +492,7 @@ if __name__ == "__main__":
 
     p = Profile.from_h5(h5_filepath, 'gt1r')
     print(p)
+    p.explore()
 
 else:
     from .utils import _is_notebook
