@@ -1,5 +1,6 @@
 from cgitb import strong
 import re
+from turtle import distance
 import numpy as np
 import h5py
 import geopandas as gpd
@@ -199,7 +200,8 @@ Photons Returned: {self.data.shape[0]}
                 pho['height'] = np.array(f[gtxx + '/heights/h_ph'])
 
                 # sliderule documentation not clear on this - skipping
-                #df['distance'] = np.array(f[gtxx + '/heights/dist_ph_along'])
+                # photons distance from the start of the segment (ref photon)
+                pho['dist_ph_along_from_seg'] = np.array(f[gtxx + '/heights/dist_ph_along'])
 
                 pho['quality_ph'] = np.array(f[gtxx + '/heights/quality_ph'])
 
@@ -330,6 +332,9 @@ Photons Returned: {self.data.shape[0]}
                                                             segment_ph_cnt=seg['segment_ph_cnt'],
                                                             total_ph_cnt=len(lat_ph))
 
+                # calculating photon along track distance from upsampled segment distance
+                pho['dist_ph_along'] = pho['segment_dist'] + pho['dist_ph_along_from_seg']
+
                 bar.update(5)
 
                 if verbose:
@@ -354,7 +359,7 @@ Photons Returned: {self.data.shape[0]}
 
                 df = df.loc[:, ['rgt', 'cycle', 'track', 'segment_id', 'segment_dist',
                                 'sc_orient', 'atl03_cnf', 'height', 'quality_ph', 'delta_time', 'pair', 'geometry',
-                            'ref_azimuth', 'ref_elev']]
+                            'ref_azimuth', 'ref_elev', 'dist_ph_along']]
 
                 bar.update(7)
 
@@ -393,8 +398,6 @@ Photons Returned: {self.data.shape[0]}
         rel = self.info['release']
         return "ATL03_{}{}_{}{}{}_{}".format(date, '*', rgt, cc, '*', rel)
 
-
-
     @staticmethod
     def _convert_seg_to_ph_res(segment_res_data,
                                ph_index_beg,
@@ -422,13 +425,13 @@ Photons Returned: {self.data.shape[0]}
         '''Export track metadata and lon/lat (no elevations) at x km along track to kml'''
         pass
 
-    def to_csv(self):
-        '''Export photon data to CSV'''
-        pass
+    # def to_csv(self):
+    #     '''Export photon data to CSV'''
+    #     pass
 
-    def to_las(self):
-        '''Export photon data to LAS 1.4'''
-        pass
+    # def to_las(self):
+    #     '''Export photon data to LAS 1.4'''
+    #     pass
 
     def explore(self):
         '''Open bokeh plot of track photons vs imagery'''
@@ -488,7 +491,7 @@ Photons Returned: {self.data.shape[0]}
 
 if __name__ == "__main__":
     from utils import _is_notebook
-    h5_filepath = "/Users/jonathan/Documents/Research/OpenOceans_Public/demos/data/ATL03_20210817155409_08401208_005_01.h5"
+    h5_filepath = "/Users/jonathan/Documents/Research/OpenOceans/demos/data/ATL03_20210817155409_08401208_005_01.h5"
 
     p = Profile.from_h5(h5_filepath, 'gt1r')
     print(p)
