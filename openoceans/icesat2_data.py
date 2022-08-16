@@ -12,12 +12,15 @@ import warnings
 import time
 import pyproj
 from shapely.geometry import Point
+import simplekml
+import os
 
 from bokeh.plotting import figure
 from bokeh.io import show, output_notebook
 from bokeh.layouts import row
 from bokeh.tile_providers import get_provider
 tile_provider = get_provider('ESRI_IMAGERY')
+
 
 def beam_info(gtxx, sc_orient):
 
@@ -201,7 +204,8 @@ Photons Returned: {self.data.shape[0]}
 
                 # sliderule documentation not clear on this - skipping
                 # photons distance from the start of the segment (ref photon)
-                pho['dist_ph_along_from_seg'] = np.array(f[gtxx + '/heights/dist_ph_along'])
+                pho['dist_ph_along_from_seg'] = np.array(
+                    f[gtxx + '/heights/dist_ph_along'])
 
                 pho['quality_ph'] = np.array(f[gtxx + '/heights/quality_ph'])
 
@@ -227,8 +231,9 @@ Photons Returned: {self.data.shape[0]}
                 anc['atlas_sdp_gps_epoch'] = np.array(
                     f['/ancillary_data/atlas_sdp_gps_epoch'])
 
+                # replace() fixes whitespace at end of string
                 anc['release'] = np.array(
-                    f['/ancillary_data/release'])[0].decode('UTF-8')
+                    f['/ancillary_data/release'])[0].decode('UTF-8').replace(" ", "")
 
                 anc['sc_orient'] = np.array(
                     f['/orbit_info/sc_orient'])
@@ -333,7 +338,8 @@ Photons Returned: {self.data.shape[0]}
                                                             total_ph_cnt=len(lat_ph))
 
                 # calculating photon along track distance from upsampled segment distance
-                pho['dist_ph_along'] = pho['segment_dist'] + pho['dist_ph_along_from_seg']
+                pho['dist_ph_along'] = pho['segment_dist'] + \
+                    pho['dist_ph_along_from_seg']
 
                 bar.update(5)
 
@@ -363,7 +369,7 @@ Photons Returned: {self.data.shape[0]}
 
                 bar.update(7)
 
-                df.insert(0, 'lat', df.geometry.y, False) 
+                df.insert(0, 'lat', df.geometry.y, False)
                 df.insert(0, 'lon', df.geometry.x, False)
 
                 # wgs84 = pyproj.crs.CRS.from_epsg(4979)
@@ -371,10 +377,10 @@ Photons Returned: {self.data.shape[0]}
                 # tform = pyproj.transformer.Transformer.from_crs(crs_from=wgs84, crs_to=wgs84_egm08)
                 # _, _, z_g = tform.transform(df.geometry.y, df.geometry.x, df.height)
 
-                # df.insert(0, 'height_ortho', z_g, False) 
+                # df.insert(0, 'height_ortho', z_g, False)
 
                 # allocation of to be used arrays
-                df.insert(0, 'classification', 
+                df.insert(0, 'classification',
                           np.int64(np.zeros_like(df.geometry.x)), False)
 
                 track_info_dict = {'date': df.index[0].date(),
@@ -397,6 +403,48 @@ Photons Returned: {self.data.shape[0]}
         cc = str(self.info['cycle']).zfill(2)
         rel = self.info['release']
         return "ATL03_{}{}_{}{}{}_{}".format(date, '*', rgt, cc, '*', rel)
+
+    def get_formatted_filename(self):
+        '''Returns a descriptive string that uniquely defines the ATL03 file/track.'''
+        date = self.info['date'].strftime('%Y-%m-%d')
+        rgt = str(self.info['rgt']).zfill(4)
+        cc = str(self.info['cycle']).zfill(2)
+        rel = self.info['release']
+        gtxx = self.info['gtxx'].upper()
+        return "{}_rgt{}_cyc{}_rel{}_beam{}".format(date, rgt, cc, rel, gtxx)       
+
+    @staticmethod
+    def _along_track_subsample(dist_ph_along, meters=1000):
+        '''Gets indices to subsample data at an approximate along-track resolution. 
+        This is primarily used for reducing the quantity of data when plotting tracks over imagery.'''
+
+        # reset starting along track distance (0, instead of equator crossing)
+        ph_at = dist_ph_along - dist_ph_along[0]
+
+        # round all data to nearest X km, creating duplicate values within each chunk
+        at_rounded = meters * np.round(ph_at/meters)
+
+        # reset index from time to plain integers
+        # these integers are later used as indices for the original data
+        at_rounded = at_rounded.reset_index(drop=True)
+
+        # get only the first of each duplicate value
+        at_dropped = at_rounded.drop_duplicates()
+
+        # data sampled at approximately every X km
+        i_sample = at_dropped.index.values
+
+        # add in last value in array for completeness if not there by chance
+        if i_sample[-1] != len(dist_ph_along)-1:
+            i_sample = np.append(i_sample, len(dist_ph_along)-1)
+
+        # indices of photons approximately X meters apart + start/end photons
+        # i_sample
+
+        # how far off the distances between photons are from the requested spacing
+        sampling_residuals = np.diff(dist_ph_along[i_sample]) - meters
+
+        return i_sample, sampling_residuals
 
     @staticmethod
     def _convert_seg_to_ph_res(segment_res_data,
@@ -421,9 +469,31 @@ Photons Returned: {self.data.shape[0]}
 
         return ph_res_data.values
 
-    def to_kml(self):
+
+    def to_kml(self, filename=None, meters=1000, verbose=True):
+        """Generates a kml file of the ICESat-2 ground track from lon/lat data.
+
+        Args:
+            filename (str, optional): Filename to save KML data. Defaults to the built-in formatted filename from the Profile class.
+            meters (int, optional): Resolution to export photon data. Defaults to a photon every 1000m.
+            verbose (bool, optional): Whether to print location that file is saved. Defaults to True.
+        """
+
+        # if unspecified, use unique readable filename
+        if filename==None:
+            filename=self.get_formatted_filename()+'.kml'
+
         '''Export track metadata and lon/lat (no elevations) at x km along track to kml'''
-        pass
+        i_sample, _ = self._along_track_subsample(self.data.dist_ph_along, meters=meters)
+
+        kml = simplekml.Kml(open=1) # the folder will be open in the table of contents
+        linestring = kml.newlinestring(name=self.get_formatted_filename(), description=self.__str__())
+        linestring.coords = self.data.iloc[i_sample].loc[:, ['lon', 'lat']].values
+        linestring.style.linestyle.color = 'ff0000ff'  # Red
+        linestring.style.linestyle.width= 2  # 5 pixels
+        kml.save(filename)
+        if verbose:
+            print(f'Saved! At {os.path.abspath(filename)}')
 
     # def to_csv(self):
     #     '''Export photon data to CSV'''
@@ -463,7 +533,7 @@ Photons Returned: {self.data.shape[0]}
                                   max(x_wm)+(max(y_wm)-min(y_wm)) * 0.2),  # zooms out proportionally
                          #  width=400, height=400,
                          sizing_mode='stretch_both',
-                         x_axis_type="mercator", y_axis_type="mercator", 
+                         x_axis_type="mercator", y_axis_type="mercator",
                          tools='zoom_in, zoom_out, wheel_zoom, pan')
 
         fig_map.add_tile(tile_provider)
@@ -474,7 +544,7 @@ Photons Returned: {self.data.shape[0]}
         fig = figure(x_axis_type="mercator",
                      #  width=400, height=400,
                      sizing_mode='stretch_both',
-                     x_range=fig_map.y_range, 
+                     x_range=fig_map.y_range,
                      tools='zoom_in,zoom_out,pan,box_zoom,wheel_zoom, undo, redo')
 
         fig.circle(x_wm, h, size=0.15, color='black')
