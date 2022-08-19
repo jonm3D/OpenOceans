@@ -14,7 +14,7 @@ class GeoAOI:
     def edit(self):
 
         # check that we're in a notebook/ipython environment
-        is_nb = self._is_notebook()
+        is_nb = _is_notebook()
 
         if is_nb == False:
             warnings.warn(

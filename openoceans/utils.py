@@ -1,4 +1,5 @@
 from IPython import get_ipython
+import numpy as np
 
 def _is_notebook():
     try:
@@ -11,3 +12,8 @@ def _is_notebook():
             return False  # Other type (?)
     except NameError:
         return False      # Probably standard Python interpreter
+
+def _find_nearest(array, value):
+    array = np.asarray(array)
+    idx = (np.abs(array - value)).argmin()
+    return array[idx]
