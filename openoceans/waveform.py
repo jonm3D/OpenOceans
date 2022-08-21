@@ -1041,7 +1041,7 @@ Initial Parameter Estimates:
 
             # plotting model input/output
             ax2.plot(self.model.input, self.model.depth,
-                     'kx-', linewidth=2, label='Histogram')
+                     'kx-', linewidth=2, label='Input Histogram')
 
             ax2.plot(self.model.output_f, self.model.depth, marker='s', linestyle='-',
                      color='darkorange', linewidth=2, alpha=0.75, label='Fitted Histogram Model')
@@ -1068,7 +1068,7 @@ Initial Parameter Estimates:
 
         # plotting model input/output
         ax1.plot(self.model.input, self.model.depth,
-                 'kx-', linewidth=2, label='Histogram')
+                 'kx-', linewidth=2, label='Input Histogram')
 
         ax1.plot(self.model.output, self.model.depth, marker='s', linestyle='-',
                  color='darkorange', linewidth=2, alpha=0.75, label='Model Estimate')
