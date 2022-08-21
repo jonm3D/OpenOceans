@@ -1,12 +1,34 @@
+from dataclasses import dataclass
+from pyexpat import model
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import medfilt, peak_widths, peak_prominences, find_peaks
-from scipy.stats import exponnorm, norm, skewnorm, expon
 import warnings
 import pandas as pd
 
+from scipy.signal import medfilt, peak_widths, peak_prominences, find_peaks
+from scipy.stats import exponnorm, norm, skewnorm, expon
+from scipy.optimize import curve_fit
+
+# to do
+# - convert turbid intensity back to a transition mult to prevent fitting errors
+# - account for skewed bathymetry peak
+# - try out slope based peak finding
+# - atlas response deconvolution
+# - add error calculations to the waveform
+
 
 def find_transition_point(turb_intens, surf_prom, surf_loc, surf_std):
+    """Calculates the depth value at which the model switches from the surface gaussian to exponential decay. 
+
+    Args:
+        turb_intens (float): A value on the surface curve below the surface at which to calculate the corresponding depth, in photons.
+        surf_prom (float): Peak prominence of the surface return, in photons.
+        surf_loc (float): Location of the surface return, in meters.
+        surf_std (float): Standard deviation of the surface return gaussian model.
+
+    Returns:
+        float: Depth corresponding to input photon count value, in meters.
+    """
     transition_value = turb_intens
 
     # debugging aid
@@ -19,13 +41,31 @@ def find_transition_point(turb_intens, surf_prom, surf_loc, surf_std):
 
     return transition_point
 
-# temporary breakout for plotting/debugging
-
 
 def noise(depth_bins, surf_prom, surf_loc, surf_std,
           decay_param, turb_intens,
           noise_above, noise_below,
           bathy_prom, bathy_loc, bathy_std):
+    """Model for noise in a pseudowaveform. Consists of an above surface noise rate (air) and a below surface noise rate (water column). 
+
+    Air noise rate is from the top of the waveform (minimum depth) to the top of the surface return (modeled as 3 standard deviations above the surface peak location). The subsurface noise rate begins at the transition point between the surface gaussian model and the turbidity exponential components, and continues to the bottom of the waveform (max depth). Data is linearly interpolated between these values (i.e. across the surface return).
+
+    Args:
+        depth_bins (array of float): Centers of depth histogram bins, in meters.
+        surf_prom (float): Peak prominence of the surface return, in photons.
+        surf_loc (float): Location of the surface return, in meters.
+        surf_std (float): Standard deviation of the surface return gaussian model.
+        decay_param (float): Decay parameter of the turbidity exponential model component.
+        turb_intens (float): Max turbidity (transition between surface/column model), in photons.
+        noise_above (float): Air noise rate, in photons/bin.
+        noise_below (float): Subsurface noise rate, in photons/bin.
+        bathy_prom (_type_): Not used, provided for consistency of input across model components.
+        bathy_loc (_type_): Not used, provided for consistency of input across model components.
+        bathy_std (_type_): Not used, provided for consistency of input across model components.
+
+    Returns:
+        array: Noise model output, matching shape of input depth array.
+    """
 
     transition_point = find_transition_point(
         turb_intens, surf_prom, surf_loc, surf_std)
@@ -42,6 +82,24 @@ def bathy(depth_bins, surf_prom, surf_loc, surf_std,
           decay_param, turb_intens,
           noise_above, noise_below,
           bathy_prom, bathy_loc, bathy_std):
+    """Gaussian model for the seafloor return. Currently intended to be added to the noise model.
+
+    Args:
+        depth_bins (array of float): Centers of depth histogram bins, in meters.
+        surf_prom (float): Not used, provided for consistency of input across model components.
+        surf_loc (float): Not used, provided for consistency of input across model components.
+        surf_std (float): Not used, provided for consistency of input across model components.
+        decay_param (float): Not used, provided for consistency of input across model components.
+        turb_intens (float): Not used, provided for consistency of input across model components.
+        noise_above (float): Not used, provided for consistency of input across model components.
+        noise_below (float): Not used, provided for consistency of input across model components.
+        bathy_prom (float): Peak prominence of the seafloor return, in photons.
+        bathy_loc (float): Peak location of the seafloor return, in photons.
+        bathy_std (float): Standard deviation of the seafloor return, in photons.
+
+    Returns:
+        array: Seafloor model output, matching shape of input depth array.
+    """
 
     return (bathy_prom * (np.sqrt(2 * np.pi) * bathy_std)) \
         * norm.pdf(depth_bins, bathy_loc, bathy_std)
@@ -51,6 +109,25 @@ def surface(depth_bins, surf_prom, surf_loc, surf_std,
             decay_param, turb_intens,
             noise_above, noise_below,
             bathy_prom, bathy_loc, bathy_std):
+    """Gaussian model for the water surface return. Returns values from the top of the water surface, to the start of the column turbidity model below surface, as defined by turbidity/decay model inputs. Currently intended to be added with other model components (noise, turbidity).
+
+    Args:
+        depth_bins (array of float): Centers of depth histogram bins, in meters.
+        surf_prom (float): Peak prominence of the surface return, in photons.
+        surf_loc (float): Location of the surface return, in meters.
+        surf_std (float): Standard deviation of the surface return gaussian model.
+        decay_param (float): Decay parameter of the turbidity exponential model component.
+        turb_intens (float): Max turbidity (transition between surface/column model), in photons.
+        noise_above (float): Not used, provided for consistency of input across model components.
+        noise_below (float): Not used, provided for consistency of input across model components.
+        bathy_prom (float): Not used, provided for consistency of input across model components.
+        bathy_loc (float): Not used, provided for consistency of input across model components.
+        bathy_std (float): Not used, provided for consistency of input across model components.
+
+
+    Returns:
+        array: Surface model output, matching shape of input depth array.
+    """
 
     # TRANSITION point from gaussian surface to exponential model
     # the max intensity of the exponential curve should match the value of the gaussian model at the transition
@@ -70,6 +147,25 @@ def turbidity(depth_bins, surf_prom, surf_loc, surf_std,
               decay_param, turb_intens,
               noise_above, noise_below,
               bathy_prom, bathy_loc, bathy_std):
+    """Exponential decay model for water column / turbidity. Returns values from the bottom of the water surface to the max depth of the waveform. Currently intended to be added with other model components (noise, surface).
+
+    Args:
+        depth_bins (array of float): Centers of depth histogram bins, in meters.
+        surf_prom (float): Peak prominence of the surface return, in photons.
+        surf_loc (float): Location of the surface return, in meters.
+        surf_std (float): Standard deviation of the surface return gaussian model.
+        decay_param (float): Decay parameter of the turbidity exponential model component.
+        turb_intens (float): Max turbidity (transition between surface/column model), in photons.
+        noise_above (float): Not used, provided for consistency of input across model components.
+        noise_below (float): Not used, provided for consistency of input across model components.
+        bathy_prom (float): Not used, provided for consistency of input across model components.
+        bathy_loc (float): Not used, provided for consistency of input across model components.
+        bathy_std (float): Not used, provided for consistency of input across model components.
+
+
+    Returns:
+        array: Turbidity model output, matching shape of input depth array.
+    """
 
     # depth_bins is the array of elevations
 
@@ -92,85 +188,117 @@ def turbidity(depth_bins, surf_prom, surf_loc, surf_std,
     return y_out
 
 
-def histogram_model(depth_bins, **kwargs):
+def histogram_model(depth_bins, surf_prom, surf_loc, surf_std,
+                    decay_param, turb_intens,
+                    noise_above, noise_below,
+                    bathy_prom, bathy_loc, bathy_std):
+    """Combines all the histogram model components into one function. 
 
-    y_noise = noise(depth_bins, **kwargs)
+    Used for optimization with scipy's curve_fit within the Waveform.fit() method.
 
-    y_surface = surface(depth_bins, **kwargs)
+    Args:
+    Args:
+        depth_bins (array of float): Centers of depth histogram bins, in meters.
+        surf_prom (float): Peak prominence of the surface return, in photons.
+        surf_loc (float): Location of the surface return, in meters.
+        surf_std (float): Standard deviation of the surface return gaussian model.
+        decay_param (float): Decay parameter of the turbidity exponential model component.
+        turb_intens (float): Max turbidity (transition between surface/column model), in photons.
+        noise_above (float): Air noise rate, in photons/bin.
+        noise_below (float): Subsurface noise rate, in photons/bin.
+        bathy_prom (float): Peak prominence of the seafloor return, in photons.
+        bathy_loc (float): Peak location of the seafloor return, in photons.
+        bathy_std (float): Standard deviation of the seafloor return, in photons.
 
-    y_bathy = bathy(depth_bins, **kwargs)
+    Returns:
+        array: Combined model output matching shape of input depth array.
+    """
 
-    y_turbidity = turbidity(depth_bins, **kwargs)
+    # curve_fit does not appreciate keyword arguments
+
+    y_noise = noise(depth_bins, surf_prom, surf_loc, surf_std,
+                    decay_param, turb_intens,
+                    noise_above, noise_below,
+                    bathy_prom, bathy_loc, bathy_std)
+
+    y_surface = surface(depth_bins, surf_prom, surf_loc, surf_std,
+                        decay_param, turb_intens,
+                        noise_above, noise_below,
+                        bathy_prom, bathy_loc, bathy_std)
+
+    y_bathy = bathy(depth_bins, surf_prom, surf_loc, surf_std,
+                    decay_param, turb_intens,
+                    noise_above, noise_below,
+                    bathy_prom, bathy_loc, bathy_std)
+
+    y_turbidity = turbidity(depth_bins, surf_prom, surf_loc, surf_std,
+                            decay_param, turb_intens,
+                            noise_above, noise_below,
+                            bathy_prom, bathy_loc, bathy_std)
 
     return y_noise + y_surface + y_turbidity + y_bathy
 
-# break this into separate functions for the noise, surface peak, etc
-
-
-# def bathy_model(depth_bins, surf_prom, surf_loc, surf_std,
-#                 decay_param, turb_intens,
-#                 noise_above, noise_below,
-#                 bathy_prom, bathy_loc, bathy_std):
-#     # original bathy model before getting split up, saved for debugging
-
-
-#     # depth_bins is the array of elevations
-
-#     # TRANSITION point from gaussian surface to exponential model
-#     # the max intensity of the exponential curve should match the value of the gaussian model at the transition
-#     transition_value = turb_intens
-
-#     if np.log(transition_value / (surf_prom)) * (-2*surf_std**2) < 0:
-#         print(transition_value, surf_prom, surf_std)
-
-#     transition_point = surf_loc \
-#         + np.sqrt(np.log(transition_value / (surf_prom))
-#                   * (-2*surf_std**2))
-
-#     # add base noise rates above and below the water surface
-#     # ramp between two constant values on either side of the gaussian
-#     bound_l = surf_loc - 3*surf_std
-#     bound_r = transition_point
-#     y_out = np.interp(depth_bins, [bound_l, bound_r], [
-#                       noise_above, noise_below])
-
-#     # SURFACE GAUSSIAN peak values
-#     y_out[depth_bins < transition_point] = y_out[depth_bins < transition_point] \
-#         + (surf_prom * (np.sqrt(2 * np.pi) * surf_std)) \
-#         * norm.pdf(depth_bins[depth_bins < transition_point], surf_loc, surf_std)
-
-#     # EXPONENTIAL decay values
-#     # model depth values are measured from the surface peak location
-#     # exponential curve begins where the surface peak value matches the input turbid intensity
-#     # decay parameter is mapped to depth in m of the bins supplied by counts
-
-#     #pseudodepth = np.arange(len(depth_bins[depth_bins >= transition_point]))
-#     # y_out[depth_bins >= transition_point] =  y_out[depth_bins >= transition_point] \
-#     #                                      + transition_value * np.exp(decay_param * pseudodepth)
-
-#     if np.exp(decay_param * (transition_point - surf_loc)) == 0:
-#         print(decay_param, transition_point, transition_value, surf_loc)
-
-#     z_depth = depth_bins[depth_bins >= transition_point] - surf_loc
-#     y_out[depth_bins >= transition_point] = y_out[depth_bins >= transition_point] \
-#         + (transition_value / np.exp(decay_param * (transition_point - surf_loc))) \
-#         * np.exp(decay_param*z_depth)
-
-#     # BATHY gaussian guess
-#     # (peak + 3std) bounded above by the surf/exp transition point
-#     # peak bounded below by lowest bin
-#     # magnitude bounded from 0 to surf mag
-#     # std bounded from 0.1 to max bin depth/6
-
-#     y_out = y_out \
-#         + (bathy_prom * (np.sqrt(2 * np.pi) * bathy_std)) \
-#         * norm.pdf(depth_bins, bathy_loc, bathy_std)
-
-#     return y_out
-
 
 def get_peak_info(hist, depth, verbose=False):
-    ''' Finds peaks and calculates associated statistics for analysis, sorted by peak height'''
+    """Evaluates input histogram to find peaks and associated peak statistics (calculated by peak_widths(), peak_prominences(), find_peaks() from scipy.signal). Pads input to return peaks at the start or end of the input array. Returns dataframe sorted by prominence.
+
+    Args:
+        hist (array): Histogram of photons by depth.
+        depth (array): Centers of depth bins used to histogram photon returns.
+        verbose (bool, optional): Option to print output and warnings. Defaults to False.
+
+    Returns:
+        Pandas DataFrame: DataFrame of peaks and peak statistics. 
+
+        Columns include:
+            'i':                    Integer index of the peak location in the input histogram.
+
+            'heights':              Peak heights, in photons. I.e. return intensity.
+
+            'depth':                Depth of the peak, in meters.
+
+            'prominences' :         Peak prominences.
+
+            'left_bases':           Integer location of left peak base (higher elev/lower depth). Peak bases are defined as the nearest minimum value on the interval found by extending a horizontal line from the current peak to either the edge of the window or to an intersection with a higher peak (same height peaks are ignored).
+
+            'right_bases':          Integer location of right peak base (higher elev/lower depth). 
+
+            'left_z':               Depth location of left peak base (higher elev/lower depth). 
+
+            'right_z':              Depth location of right peak base (higher elev/lower depth). 
+
+            'fwhm':                 Approx full-width at half maximum (at 60% relative height).
+
+            'width_heights_hm':     Height of the contour lines at which fwhm was calulated.
+
+            'left_ips_hm':          Interpolated positions of left intersection point of a horizontal line at half maximum.
+
+            'right_ips_hm':         Interpolated positions of right intersection point of a horizontal line at half maximum.
+
+            'widths_full':          Peak width at at its lowest contour line.
+
+            'width_heights_full':   Height of contour lines at base of peak.
+
+            'left_ips_full':        Interpolated positions of left intersection point of a horizontal line at the base of the peak.
+
+            'right_ips_full':       Interpolated positions of right intersection point of a horizontal line at the base of the peak.
+
+            'sigma_est_i':          Peak standard deviation, in terms of integer indices.
+
+            'sigma_est_left_i':     Leftward (higher elev, shallower depth) peak standard deviation, in terms of integer indices.
+
+            'sigma_est_right_i':    Rightward (lower elev, deeper depth) peak standard deviation, in terms of integer indices.
+
+            'sigma_est':            Peak standard deviation, in meters.
+
+            'prom_scaling_i':       Normal distribution scaling parameter to match peak prominence, for a distribution mapped to integer inputs.
+
+            'mag_scaling_i':        Normal distribution scaling parameter to match absolute peak height, for a distribution mapped to integer inputs.
+
+            'prom_scaling':         Normal distribution scaling parameter to match peak prominence, for a distribution with depth inputs.
+
+            'mag_scaling':          Normal distribution scaling parameter to match absolute peak height, for a distribution with depth inputs.
+    """
 
     depth_bin_size = np.unique(np.diff(depth))[0]
 
@@ -267,14 +395,35 @@ def get_peak_info(hist, depth, verbose=False):
     pk_df = pd.DataFrame.from_dict(pk_dict, orient='columns')
     pk_df.sort_values(by='heights', inplace=True, ascending=False)
 
-    # * should peaks be sorted by prominence instead?
-    # worry that sorting by magnitude will bias towards shallow turbidity over sparse bathy
-    # maybe sort by height for the surface, prominence for the subsurface
+    # is prominence truly the best way to sort peaks?
 
     return pk_df
 
 
-def estimate_model_params(hist, depth, peaks, verbose=False):
+def estimate_model_params(hist, depth, peaks=None, verbose=False):
+    """Calculates parameters for noise, surface, bathy, and turbidity model components from statistical approximations. Also outputs parameter bounds to use for curve fitting and a quality flag (in progress).
+
+    Quality flag interpretation:
+        -2 Photons with no distinct peaks.
+        -1 Not enough data (less than 1m worth of bins).
+        0  Not set
+        1  Surface peak exists, but no subsurface peaks found.
+        2  Surface peak and weak bathy peak identified (prominence < noise_below * thresh).
+        3  Surface peak and strong bathy peak identified (prominence > noise_below * thresh).
+
+    Args:
+        hist (array): Histogram of photons by depth.
+        depth (array): Centers of depth bins used to histogram photon returns.
+        peaks (DataFrame): Peak info statistics. If None, will calculate from get_peak_info().
+        verbose (bool, optional): Option to output warnings/print statements. Defaults to False.
+
+    Returns:
+        params_out (dict): Model parameters. See histogram_model() docstring for more detail.
+        bounds (DataFrame): Two-column dataframe consisting of upper and lower bounds on each model parameter. Required for curve fitting to ensure reasonable results and convergent solution. 
+        quality_flag (int): Flag summarizing parameter confidence.
+    """
+    if ~isinstance(peaks, pd.DataFrame):
+        peaks = get_peak_info(hist, depth)
 
     pk_df = peaks
     zero_val = 1e-31
@@ -685,12 +834,40 @@ def estimate_model_params(hist, depth, peaks, verbose=False):
 
     bounds = pd.DataFrame([lower_bound, upper_bound],
                           index=['lower', 'upper']).T
-    params_out = pd.Series(params_out, name='initial')
 
     return params_out, bounds, quality_flag
 
 
 class Waveform:
+    """Class for managing psuedowaveform data. Will approximate model parameters upon initialization.
+
+    Attributes:
+        data : array of histogram data input
+
+        depth_bin_edges : histogram bin edges input 
+
+        depths : center depths of histogram bins
+
+        peaks : dataframe of info relating to peaks of input histogram
+
+        bounds : dataframe with upper and lower bounds for fitting process
+
+        quality_flag : approx of confidence 
+            (-2:no peaks, -1:not enough data, 0:not set, 1:surface only, 2:strong surface and weak bathy peaks, 3:strong surface and bathy peaks)
+
+        model : Dataframe of histogram model components and output. Includes columns for fitted  model output, which will be nan-filled until the fit() method is called.
+
+        model_interp : Dataframe of histogram model components and output, interpolated to approximately 0.05m depth to help with visualization and plotting. Includes columns for fitted model output, which will be nan-filled until the fit() method is called.
+
+        fitted : Has this waveform been fitted and corresponding dataframe columns filled? Boolean, default false.
+
+    Methods:
+        fit() : Non-linear least squares optimization to fit refine model to original data.
+
+        show() : Plot histogram and model data.
+
+    """
+
     def __init__(self, histogram, depth_bin_edges, verbose=False):
 
         # ensure that histogram and bin edges make sense
@@ -708,79 +885,203 @@ class Waveform:
         # center of histogram bins
         self.depth = self.bin_edges[:-1] + np.diff(self.bin_edges)/2
 
+        # has this been waveform model been fitted?
+        self.fitted = False
+
         # get peak data about this waveform
         self.peaks = get_peak_info(self.data, self.depth, verbose=verbose)
 
-        self.params, self.bounds, self.quality_flag = estimate_model_params(
+        # get hist model parameters, fitting bounds, and qualitative quality flag
+        params_est, self.bounds, self.quality_flag = estimate_model_params(
             self.data, self.depth, self.peaks, verbose=verbose)
 
-        # Backing out modeled histogram values for plotting and analysis
-        self.model = histogram_model(self.depth, **self.params)
-        self.noise_model = noise(self.depth, **self.params)
-        self.bathy_model = bathy(self.depth, **self.params)
-        self.surface_model = surface(self.depth, **self.params)
-        self.turbidity_model = turbidity(self.depth, **self.params)
+        params_est = pd.Series(params_est, name='initial')
+        params_fit = pd.Series(np.nan, index=params_est.index, name='fitted')
 
-        # find a better term than high_res
-        self.depth_high_res = np.linspace(
-            self.depth.min(), self.depth.max(), 1000)
-        self.noise_model_high_res = noise(self.depth_high_res, **self.params)
-        self.bathy_model_high_res = bathy(self.depth_high_res, **self.params)
-        self.surface_model_high_res = surface(
-            self.depth_high_res, **self.params)
-        self.turbidity_model_high_res = turbidity(
-            self.depth_high_res, **self.params)
+        # set up model parameters alongside a future column for fitted parameters
+        self.params = pd.DataFrame([params_est, params_fit]).T
+
+        ###### Model Output ######
+        # organize dataframe (_f : fitted model)
+        self.model = pd.DataFrame(np.nan, index=np.arange(len(self.depth)),
+                                  columns=['input', 'depth', 'output', 'noise', 'surface', 'bathy', 'turbidity', 'output_f', 'noise_f', 'surface_f', 'bathy_f', 'turbidity_f'])
+
+        # statistical model results
+        self.model.input = self.data
+        self.model.depth = self.depth
+        self.model.output = histogram_model(self.depth, **self.params.initial)
+
+        # model components
+        self.model.noise = noise(self.depth, **self.params.initial)
+        self.model.surface = surface(self.depth, **self.params.initial)
+        self.model.bathy = bathy(self.depth, **self.params.initial)
+        self.model.turbidity = turbidity(self.depth, **self.params.initial)
+
+        ###### Interpolated Model Output ######
+        # interpolate to higher resolution for plotting and fitting
+        # gives approx 0.05m vertical resolution, but not exact (depending on orig data)
+        depth_interp = np.linspace(self.depth.min(),
+                                   self.depth.max(),
+                                   np.int64(np.abs(self.depth.max()-self.depth.min()) / 0.05))
+
+        self.model_interp = pd.DataFrame(np.nan, index=np.arange(len(depth_interp)),
+                                         columns=['input', 'depth', 'output', 'noise', 'surface', 'bathy', 'turbidity', 'output_f', 'noise_f', 'surface_f', 'bathy_f', 'turbidity_f'])
+
+        # statistical model results
+        self.model_interp.depth = depth_interp
+        self.model_interp.input = np.interp(
+            self.model_interp.depth, self.depth, self.data)
+        self.model_interp.output = histogram_model(
+            self.model_interp.depth, **self.params.initial)
+
+        # model components
+        self.model_interp.noise = noise(
+            self.model_interp.depth, **self.params.initial)
+        self.model_interp.surface = surface(
+            self.model_interp.depth, **self.params.initial)
+        self.model_interp.bathy = bathy(
+            self.model_interp.depth, **self.params.initial)
+        self.model_interp.turbidity = turbidity(
+            self.model_interp.depth, **self.params.initial)
 
     def __str__(self):
         '''Human readable summary'''
         s = f"""----- PSEUDOWAVEFORM -----
 TOTAL PHOTONS: {np.sum(self.data)}
-Depth Range : [{min(self.bin_edges)}m, {max(self.bin_edges)}m]
+Depth Range : [{min(self.bin_edges):.2f}m, {max(self.bin_edges):.2f}m]
 Depth Bin Count : {len(self.bin_edges) - 1}
 Peak Count : {self.peaks.shape[0]}
+Parameter Quality Flag : {self.quality_flag}
+Fitted? : {self.fitted}
+
+Initial Parameter Estimates:
+    Surface Peak Location : {self.params.initial.surf_loc:.2f}m
+    Bathy Peak Location : {self.params.initial.bathy_loc:.2f}m
+    Surface/Bathy Peak Ratio : {(self.params.initial.surf_prom / self.params.initial.bathy_prom):.2f}
         """
         return s
 
-    def deconvolve_atlas(self):
+    def _deconvolve_atlas(self):
         # deconvolves the atlas response at whatever the depth resolution is
         pass
 
-    def fit(self):
-        # fits the estimated waveform with non linear least squares
-        pass
+    def fit(self, xtol=1e-6, ftol=1e-6):
+        """Attempts to fit the initially estimated histogram model to the original data. Returns dict of new model parameters, but also saves fitted model data to Waveform.params, Wavefrom.model, and Waveform.model_interp attributes for further analysis.
 
-    def show(self):
-        # plots the pseudowaveform with model
-        # dont make any new calculations here!
-        f = plt.figure(figsize=[4.8, 6.4])
+        Args:
+            xtol (float, optional): Relative error desired in the approximate solution (passes to scipy least squares). Defaults to 1e-6.
+            ftol (float, optional): Relative error desired in the sum of squares (passes to scipy least squares). . Defaults to 1e-6.
 
-        # plt.plot(self.model, self.depth, 'ro-')
-        plt.plot(self.noise_model_high_res + self.surface_model_high_res + self.turbidity_model_high_res +
-                 self.bathy_model_high_res, self.depth_high_res, 'b.', label='Seafloor Return')
+        Returns:
+            dict: Dictionary of refined model parameters
+        """
+        params_fit, _ = curve_fit(histogram_model,
+                                  self.model_interp.depth,
+                                  self.model_interp.input,
+                                  p0=self.params.initial,
+                                  bounds=(self.bounds.lower,
+                                          self.bounds.upper),
+                                  xtol=xtol, ftol=ftol)  # , maxfev=5000)
 
-        plt.plot(self.noise_model_high_res + self.surface_model_high_res,
-                 self.depth_high_res, 'r.', label='Surface Return')
+        # save fitted model output
+        self.model.output_f = histogram_model(self.model.depth, *params_fit)
+        self.model.noise_f = noise(self.model.depth, *params_fit)
+        self.model.bathy_f = bathy(self.model.depth, *params_fit)
+        self.model.surface_f = surface(self.model.depth, *params_fit)
+        self.model.turbidity_f = turbidity(self.model.depth, *params_fit)
 
-        plt.plot(self.noise_model_high_res + self.turbidity_model_high_res,
-                 self.depth_high_res, 'g.', label='Turbidity')
+        # save fitted model output at interpolated resolution
+        self.model_interp.output_f = histogram_model(
+            self.model_interp.depth, *params_fit)
+        self.model_interp.noise_f = noise(self.model_interp.depth, *params_fit)
+        self.model_interp.bathy_f = bathy(self.model_interp.depth, *params_fit)
+        self.model_interp.surface_f = surface(
+            self.model_interp.depth, *params_fit)
+        self.model_interp.turbidity_f = turbidity(
+            self.model_interp.depth, *params_fit)
 
-        plt.plot(self.noise_model_high_res,
-                 self.depth_high_res, marker='.', linestyle='', color='grey', label='Noise')
+        self.params.fitted = params_fit
+        self.fitted = True
 
-        plt.plot(self.data, self.depth, 'kx-', linewidth=2, label='Histogram')
-        plt.plot(self.model, self.depth, marker='s', linestyle='-',
-                 color='darkorange', linewidth=2, alpha=0.75, label='Histogram Model')
+        # evaluate error and store result
+        # to do
 
-        plt.legend()
-        plt.grid('both')
-        plt.gca().invert_yaxis()
+        return params_fit
 
-        plt.ylabel('Depth (m)')
-        plt.xlabel('Photons (count)')
-        plt.title('Pseudowaveform Model Components')
+    def show(self, hide_fitted=False):
+        """Visualize histogram and model data in a plot.
+
+        Args:
+            hide_fitted (bool, optional): Whether or not to hide the fitted model from the plot if it's already been calculated. Defaults to False.
+
+        Returns:
+            f (pyplot figure): Matplolib Figure with data.
+        """
+
+        # plotting just statistical model
+        if (self.fitted == False) or (hide_fitted == True):
+            f = plt.figure(figsize=[4.8, 6.4])
+            ax1 = f.gca()
+
+        # plot fitted model too
+        else:
+            f, (ax1, ax2) = plt.subplots(1, 2, sharey=True, figsize=[9.6, 6.4])
+
+            ax2.plot(self.model_interp.noise_f + self.model_interp.surface_f + self.model_interp.turbidity_f +
+                     self.model_interp.bathy_f, self.model_interp.depth, 'b.', label='Seafloor_F')
+
+            ax2.plot(self.model_interp.noise_f + self.model_interp.surface_f,
+                     self.model_interp.depth, 'r.', label='Surface_F')
+
+            ax2.plot(self.model_interp.noise_f + self.model_interp.turbidity_f,
+                     self.model_interp.depth, 'g.', label='Turbidity_F')
+
+            ax2.plot(self.model_interp.noise_f,
+                     self.model_interp.depth, marker='.', linestyle='', color='grey', label='Noise_F')
+
+            # plotting model input/output
+            ax2.plot(self.model.input, self.model.depth,
+                     'kx-', linewidth=2, label='Histogram')
+
+            ax2.plot(self.model.output_f, self.model.depth, marker='s', linestyle='-',
+                     color='darkorange', linewidth=2, alpha=0.75, label='Fitted Histogram Model')
+
+            ax2.legend()
+            ax2.grid('major')
+            # ax2.invert_yaxis()
+            # ax2.set_ylabel('Depth (m)')
+            ax2.set_xlabel('Photons (count)')
+            ax2.set_title('Fitted Model')
+
+        # plotting model components (interpolated for clarity)
+        ax1.plot(self.model_interp.noise + self.model_interp.surface + self.model_interp.turbidity +
+                 self.model_interp.bathy, self.model_interp.depth, 'b.', label='Seafloor')
+
+        ax1.plot(self.model_interp.noise + self.model_interp.surface,
+                 self.model_interp.depth, 'r.', label='Surface')
+
+        ax1.plot(self.model_interp.noise + self.model_interp.turbidity,
+                 self.model_interp.depth, 'g.', label='Turbidity')
+
+        ax1.plot(self.model_interp.noise,
+                 self.model_interp.depth, marker='.', linestyle='', color='grey', label='Noise')
+
+        # plotting model input/output
+        ax1.plot(self.model.input, self.model.depth,
+                 'kx-', linewidth=2, label='Histogram')
+
+        ax1.plot(self.model.output, self.model.depth, marker='s', linestyle='-',
+                 color='darkorange', linewidth=2, alpha=0.75, label='Model Estimate')
+
+        ax1.legend()
+        ax1.grid('major')
+        ax1.invert_yaxis()
+
+        ax1.set_ylabel('Depth (m)')
+        ax1.set_xlabel('Photons (count)')
+        ax1.set_title('Initial Model')
 
         plt.tight_layout()
-        plt.show()
 
         return f
 
@@ -796,6 +1097,7 @@ if __name__ == "__main__":
 
     w = Waveform(hist, depth_bin_edges)
     print(w)
-    w.show()
+    w.fit()
+    # w.show()
 
     print('')
