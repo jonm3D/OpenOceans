@@ -868,7 +868,7 @@ class Waveform:
 
     """
 
-    def __init__(self, histogram, depth_bin_edges, verbose=False):
+    def __init__(self, histogram, depth_bin_edges, fit=False, verbose=False):
 
         # ensure that histogram and bin edges make sense
         assert len(histogram) == (len(depth_bin_edges) - 1)
@@ -943,6 +943,9 @@ class Waveform:
             self.model_interp.depth, **self.params.initial)
         self.model_interp.turbidity = turbidity(
             self.model_interp.depth, **self.params.initial)
+
+        if fit==True:
+            _ = self.fit()
 
     def __str__(self):
         '''Human readable summary'''
