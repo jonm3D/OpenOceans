@@ -517,7 +517,6 @@ def select_profile(attr, old, new):
 
     ########
     global data_origin
-    print(data_origin)
 
     if data_origin == 'local':
         # data loaded from local h5

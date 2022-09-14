@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from pyexpat import model
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
@@ -857,7 +856,7 @@ class Waveform:
 
         model : Dataframe of histogram model components and output. Includes columns for fitted  model output, which will be nan-filled until the fit() method is called.
 
-        model_interp : Dataframe of histogram model components and output, interpolated to approximately 0.05m depth to help with visualization and plotting. Includes columns for fitted model output, which will be nan-filled until the fit() method is called.
+        model_interp : Dataframe of histogram model components and output, interpolated to approximately 0.01m depth to help with visualization and plotting. Includes columns for fitted model output, which will be nan-filled until the fit() method is called.
 
         fitted : Has this waveform been fitted and corresponding dataframe columns filled? Boolean, default false.
 
@@ -919,10 +918,10 @@ class Waveform:
 
         ###### Interpolated Model Output ######
         # interpolate to higher resolution for plotting and fitting
-        # gives approx 0.05m vertical resolution, but not exact (depending on orig data)
+        # gives approx 0.01m vertical resolution, but not exact (depending on orig data)
         depth_interp = np.linspace(self.depth.min(),
                                    self.depth.max(),
-                                   np.int64(np.abs(self.depth.max()-self.depth.min()) / 0.05))
+                                   np.int64(np.abs(self.depth.max()-self.depth.min()) / 0.01))
 
         self.model_interp = pd.DataFrame(np.nan, index=np.arange(len(depth_interp)),
                                          columns=['input', 'depth', 'output', 'noise', 'surface', 'bathy', 'turbidity', 'output_f', 'noise_f', 'surface_f', 'bathy_f', 'turbidity_f'])
@@ -947,6 +946,10 @@ class Waveform:
         if fit==True:
             _ = self.fit()
 
+        # placeholder for the segments of profile data
+        self.profile = None
+        self.sat_ph_any = None
+
     def __str__(self):
         '''Human readable summary'''
         s = f"""----- PSEUDOWAVEFORM -----
@@ -967,6 +970,10 @@ Initial Parameter Estimates:
     def _deconvolve_atlas(self):
         # deconvolves the atlas response at whatever the depth resolution is
         pass
+
+    def set_sat_ph_any(self, flag):
+        'true if there are any quality_ph flagged photons in this window'
+        self.sat_ph_any = flag
 
     def fit(self, xtol=1e-6, ftol=1e-6):
         """Attempts to fit the initially estimated histogram model to the original data. Returns dict of new model parameters, but also saves fitted model data to Waveform.params, Wavefrom.model, and Waveform.model_interp attributes for further analysis.
@@ -1011,7 +1018,10 @@ Initial Parameter Estimates:
 
         return params_fit
 
-    def show(self, hide_fitted=False):
+    def add_profile(self, profile):
+        self.profile = profile
+
+    def show(self, ylim=None, logplot=True, hide_fitted=False):
         """Visualize histogram and model data in a plot.
 
         Args:
@@ -1070,19 +1080,27 @@ Initial Parameter Estimates:
                  self.model_interp.depth, marker='.', linestyle='', color='grey', label='Noise')
 
         # plotting model input/output
-        ax1.plot(self.model.input, self.model.depth,
+        # extra index prevents mess when plotting log
+        ax1.plot(self.model.input[self.model.input > 0], self.model.depth[self.model.input > 0],
                  'kx-', linewidth=2, label='Input Histogram')
 
-        ax1.plot(self.model.output, self.model.depth, marker='s', linestyle='-',
+        ax1.plot(self.model.output[self.model.output > 0], self.model.depth[self.model.output > 0], marker='s', linestyle='-',
                  color='darkorange', linewidth=2, alpha=0.75, label='Model Estimate')
 
         ax1.legend()
         ax1.grid('major')
         ax1.invert_yaxis()
-
+        
         ax1.set_ylabel('Depth (m)')
         ax1.set_xlabel('Photons (count)')
         ax1.set_title('Initial Model')
+
+        if logplot:
+            ax1.set_xscale('log')
+            ax1.set_xlim([1e-1, ax1.get_xlim()[1]])
+
+        if ~isinstance(ylim, type(None)):
+            ax1.set_ylim(ylim)
 
         plt.tight_layout()
 
