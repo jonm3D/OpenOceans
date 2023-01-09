@@ -56,3 +56,5 @@ docs/_build/
 shorelines/mainlands.kml
 shorelines/big_islands.kml
 shorelines/small_islands.kml
+
+sample_data/*.h5
