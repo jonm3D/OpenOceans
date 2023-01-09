@@ -57,4 +57,7 @@ shorelines/mainlands.kml
 shorelines/big_islands.kml
 shorelines/small_islands.kml
 
-sample_data/*.h5
+# sample h5 files
+sample_data/north_carolina_ATL03_20191024144104_04230506_005_01.h5
+
+
