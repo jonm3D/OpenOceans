@@ -12,6 +12,9 @@ import pyproj
 from shapely.geometry import Point
 import simplekml
 import os
+import matplotlib.pyplot as plt
+import hdbscan
+import seaborn as sns
 
 from bokeh.plotting import figure
 from bokeh.io import show, output_notebook
@@ -19,6 +22,8 @@ from bokeh.layouts import row
 from bokeh.tile_providers import get_provider
 tile_provider = get_provider('ESRI_IMAGERY')
 
+# IMPORT FUNCTION DOESNT KNOW HOW TO DISTINGUISH BETWEEN PRERELEASE AND RELEASE DATA
+# saving images / filenames doesnt account for section number from ATL03 name
 
 def beam_info(gtxx, sc_orient):
 
@@ -112,17 +117,41 @@ def beam_info(gtxx, sc_orient):
 class Profile:
     def __init__(self, data=None, aoi=None, info=None):
 
+        # area of interest
+        # if aoi is provided, clip photon data
+        if aoi is not None:
+            data = self._clip_to_aoi(data, aoi)
+        
+        self.aoi = aoi
+
         # details about the track (date, gtxx, rgt, cycle)
         self.info = info
 
         # photon resolution satellite data
+        # add land classifications 
+
+        if aoi is not None:
+            shoreline_bbox = aoi.poly.bounds
+        else:
+            shoreline_bbox = None
+
+        try:
+
+            land_point_labels = self._find_land_points(data, bbox=shoreline_bbox)
+
+            data.loc[:, 'is_land'] = land_point_labels
+
+            # data.loc[land_idx, 'is_land'] = 0
+
+        except:
+            pass
+
+        # save to Profile object
         self.data = data
 
-        # area of interest
-        self.aoi = aoi
-
+        self.signal_finding = False
         # have a property for height datum and/or x,y crs?
-
+        
     def __str__(self):
         '''Human-readable description.'''
         desc = f"""
@@ -130,6 +159,8 @@ TRACK DETAILS
     D/M/Y: {self.info['date'].strftime('%d/%m/%Y')}
     Reference Ground Track: {self.info['rgt']}
     Cycle: {str(self.info['cycle'])}
+    Region: {str(self.info['region'])}
+    Orbit Direction: {self.info['orbit_dir']}
     Release: {str(self.info['release'])}
 
 BEAM DETAILS
@@ -141,7 +172,6 @@ ICESat-2 Profile: {self.get_atl03_name_pattern()}
 Photons Returned: {self.data.shape[0]}
 """
         return desc
-
 
     @classmethod
     def from_h5(cls, filepath, gtxx, conf_type=1, aoi=None, verbose=False):
@@ -168,11 +198,13 @@ Photons Returned: {self.data.shape[0]}
             raise Exception(
                 '''Requested beams must be a string (e.g.\'gt1r\')''')
 
-        # if verbose:
-        #     print(h5_file_path)
-        #     print('File size: {:.2f} GB'.format(os.path.getsize(h5_file_path) / 1e9))
-        with progressbar.ProgressBar(max_value=7) as bar:
+        if verbose:
+            ProgressBar = progressbar.ProgressBar(max_value=7)
+        else:
+            ProgressBar = progressbar.NullBar(max_value=7)
 
+
+        with ProgressBar as bar:
             with h5py.File(filepath, 'r') as f:
 
                 # initialize data storage variables
@@ -230,6 +262,22 @@ Photons Returned: {self.data.shape[0]}
                 anc['atlas_sdp_gps_epoch'] = np.array(
                     f['/ancillary_data/atlas_sdp_gps_epoch'])
 
+                anc['region'] = np.array(f['/ancillary_data/start_region'])[0]
+
+                # use region to determine track direction
+                if (anc['region'] <= 3) or (anc['region'] >= 12):
+                    anc['orbit_dir'] = 'ASCENDING'
+
+                elif (anc['region'] == 4) or (anc['region'] == 11):
+                    anc['orbit_dir'] = 'POLE'
+
+                else:
+                    anc['orbit_dir'] = 'DESCENDING'
+
+                # check on ATL03 behavior
+                if np.array(f['/ancillary_data/start_region'])[0] != np.array(f['/ancillary_data/end_region'])[0]:
+                    warnings.warn('Start/end region numbers differ - figure out why and handle this behavior.')
+
                 # replace() fixes whitespace at end of string
                 anc['release'] = np.array(
                     f['/ancillary_data/release'])[0].decode('UTF-8').replace(" ", "")
@@ -250,6 +298,9 @@ Photons Returned: {self.data.shape[0]}
 
                 anc['cycle_number'] = np.array(
                     f['/orbit_info/cycle_number'])[0]
+
+                pho['region'] = np.int64(
+                    anc['region'] * np.ones(len(lat_ph))) 
 
                 pho['cycle'] = np.int64(
                     anc['cycle_number'] * np.ones(len(lat_ph)))
@@ -350,19 +401,19 @@ Photons Returned: {self.data.shape[0]}
                                                             total_ph_cnt=len(lat_ph))
 
                 pho['surf_type_land'] = np.int64(cls._convert_seg_to_ph_res(segment_res_data=seg['surf_type_land'],
-                                                                   ph_index_beg=seg['ph_index_beg'],
-                                                                   segment_ph_cnt=seg['segment_ph_cnt'],
-                                                                   total_ph_cnt=len(lat_ph)))
+                                                                            ph_index_beg=seg['ph_index_beg'],
+                                                                            segment_ph_cnt=seg['segment_ph_cnt'],
+                                                                            total_ph_cnt=len(lat_ph)))
 
                 pho['surf_type_ocean'] = np.int64(cls._convert_seg_to_ph_res(segment_res_data=seg['surf_type_ocean'],
-                                                                    ph_index_beg=seg['ph_index_beg'],
-                                                                    segment_ph_cnt=seg['segment_ph_cnt'],
-                                                                    total_ph_cnt=len(lat_ph)))
+                                                                             ph_index_beg=seg['ph_index_beg'],
+                                                                             segment_ph_cnt=seg['segment_ph_cnt'],
+                                                                             total_ph_cnt=len(lat_ph)))
 
                 pho['surf_type_inland_water'] = np.int64(cls._convert_seg_to_ph_res(segment_res_data=seg['surf_type_inland_water'],
-                                                                           ph_index_beg=seg['ph_index_beg'],
-                                                                           segment_ph_cnt=seg['segment_ph_cnt'],
-                                                                           total_ph_cnt=len(lat_ph)))
+                                                                                    ph_index_beg=seg['ph_index_beg'],
+                                                                                    segment_ph_cnt=seg['segment_ph_cnt'],
+                                                                                    total_ph_cnt=len(lat_ph)))
 
                 # calculating photon along track distance from upsampled segment distance
                 pho['dist_ph_along'] = pho['segment_dist'] + \
@@ -388,9 +439,9 @@ Photons Returned: {self.data.shape[0]}
 
                 df = gpd.GeoDataFrame(pho)
 
-                df.set_index('time', inplace=True)
+                # df.set_index('time', inplace=True)
 
-                df = df.loc[:, ['rgt', 'cycle', 'track', 'segment_id', 'segment_dist',
+                df = df.loc[:, ['time', 'rgt', 'cycle', 'region', 'track', 'segment_id', 'segment_dist',
                                 'sc_orient', 'atl03_cnf', 'height', 'quality_ph', 'delta_time', 'pair', 'geometry',
                                 'ref_azimuth', 'ref_elev', 'dist_ph_along',
                                 'surf_type_land', 'surf_type_ocean', 'surf_type_inland_water', 'geoid_z']]
@@ -404,42 +455,77 @@ Photons Returned: {self.data.shape[0]}
                 # wgs84_egm08 = pyproj.crs.CRS.from_epsg(3855)
                 # tform = pyproj.transformer.Transformer.from_crs(crs_from=wgs84, crs_to=wgs84_egm08)
                 # _, _, z_g = tform.transform(df.geometry.y, df.geometry.x, df.height)
-
                 # df.insert(0, 'height_ortho', z_g, False)
 
                 # allocation of to be used arrays
-                df.insert(0, 'classification',
-                          np.int64(np.zeros_like(df.geometry.x)), False)
+                zero_int_array = np.int64(np.zeros_like(df.geometry.x))
 
-                track_info_dict = {'date': df.index[0].date(),
+                # insert() usage reminder: loc, column, value, allow_duplications
+                df.insert(0, 'classification',
+                          zero_int_array - 999, False)
+
+                df.insert(0, 'signal',
+                          zero_int_array, False)
+
+                # Land flag initialized as -1
+                # If shorelines downloaded already, will be set to 0 or 1
+                df.insert(0, 'is_land',
+                          zero_int_array - 1, False)
+
+                df.set_crs("EPSG:4326", inplace=True)
+
+                track_info_dict = {'date': df.time[0].date(),
                                    'rgt': anc['rgt'],
                                    'gtxx': gtxx,
                                    'cycle': anc['cycle_number'],
+                                   'region': anc['region'],
+                                   'orbit_dir':anc['orbit_dir'],
                                    'release': anc['release']}
 
                 beam_info_dict = beam_info(gtxx, anc['sc_orient'])
 
-                # combine the two
+                # combine the two dicts
                 info_dict = {**track_info_dict, **beam_info_dict}
 
-        return cls(data=df, info=info_dict)
+        return cls(data=df, info=info_dict, aoi=aoi)
 
     def get_atl03_name_pattern(self):
         '''Returns a regex pattern matching the original ATL03 filename.'''
         date = self.info['date'].strftime('%Y%m%d')
         rgt = str(self.info['rgt']).zfill(4)
         cc = str(self.info['cycle']).zfill(2)
+        reg = str(self.info['region']).zfill(2)
         rel = self.info['release']
-        return "ATL03_{}{}_{}{}{}_{}".format(date, '*', rgt, cc, '*', rel)
+        return "ATL03_{}{}_{}{}{}_{}".format(date, '*', rgt, cc, reg, rel)
 
     def get_formatted_filename(self):
         '''Returns a descriptive string that uniquely defines the ATL03 file/track.'''
         date = self.info['date'].strftime('%Y-%m-%d')
         rgt = str(self.info['rgt']).zfill(4)
         cc = str(self.info['cycle']).zfill(2)
+        reg = str(self.info['region']).zfill(2)
         rel = self.info['release']
         gtxx = self.info['gtxx'].upper()
-        return "{}_rgt{}_cyc{}_rel{}_beam{}".format(date, rgt, cc, rel, gtxx)
+        return "{}_rgt{}_cyc{}_reg{}_rel{}_beam{}".format(date, rgt, cc, reg, rel, gtxx)
+
+    @classmethod
+    def load_sample(cls, aoi=None):
+
+        # relative path to atl03 sample data
+        try:
+
+            filepath = os.path.join('sample_data', 'gbr_reef_ATL03_20210817155409_08401208_005_01.h5')
+
+            absolute_filepath = os.path.abspath(filepath)
+            
+            sample_profile = cls.from_h5(absolute_filepath, 'gt2r', aoi=aoi)
+
+            return sample_profile
+
+        except:
+            print('Sample data not found.')
+
+            return None
 
     @staticmethod
     def _along_track_subsample(dist_ph_along, meters=1000):
@@ -447,7 +533,7 @@ Photons Returned: {self.data.shape[0]}
         This is primarily used for reducing the quantity of data when plotting tracks over imagery.'''
 
         # reset starting along track distance (0, instead of equator crossing)
-        ph_at = dist_ph_along - dist_ph_along[0]
+        ph_at = dist_ph_along - dist_ph_along.iloc[0]
 
         # round all data to nearest X km, creating duplicate values within each chunk
         at_rounded = meters * np.round(ph_at/meters)
@@ -470,7 +556,7 @@ Photons Returned: {self.data.shape[0]}
         # i_sample
 
         # how far off the distances between photons are from the requested spacing
-        sampling_residuals = np.diff(dist_ph_along[i_sample]) - meters
+        sampling_residuals = np.diff(dist_ph_along.iloc[i_sample]) - meters
 
         return i_sample, sampling_residuals
 
@@ -521,6 +607,9 @@ Photons Returned: {self.data.shape[0]}
         linestring.coords = self.data.iloc[i_sample].loc[:, [
             'lon', 'lat']].values
         linestring.style.linestyle.color = 'ff0000ff'  # Red
+
+        # linestring.style.linestyle.color = '39ff14'  # green
+
         linestring.style.linestyle.width = 2  # 5 pixels
         kml.save(filename)
         if verbose:
@@ -587,14 +676,233 @@ Photons Returned: {self.data.shape[0]}
 
     def label_photons(self):
         '''Stripped down generic photon labeler'''
+        print('Not yet implemented!')
+        return None
         # dropdown menu to select label for assigning photons
+
+    def show_photons(self, x_unit='along track', y_lim=None, x_lim=None):
+
+        plt.figure()
+        if x_unit == 'along track':
+            x = self.data.dist_ph_along - self.data.dist_ph_along.min()
+            xlabel = 'Along Track Distance (m)'
+
+        elif x_unit == 'lat':
+            x = self.data.lat
+            xlabel = 'Latitude (deg)'
+
+        else:
+            print('unknown x unit - supports along track or lat')
+            x = self.data.lat
+            xlabel = 'Latitude (deg)'
+
+        z = self.data.height - self.data.geoid_z
+
+        plt.plot(x,z,'k.', markersize=1, alpha=0.6, label='All Photons')
+
+        # plotting specific classes
+
+        # check to see if the photons have been classified
+        if np.all(self.data.classification == -999):
+            # proceed without plotting specific classes
+            pass
+
+        else:
+            labels = self.data.classification
+
+            surf_idx = labels==41
+            bathy_idx = labels==40
+            column_idx = labels==45 
+
+            # plot classes
+            plt.plot(x[surf_idx], z[surf_idx], 'r.', \
+                markersize=1, alpha=0.75, label='Surface (41)')
+            plt.plot(x[bathy_idx], z[bathy_idx], 'bo', \
+                markersize=1, alpha=0.75, label='Bathymetry (41)')
+            plt.plot(x[column_idx], z[column_idx], 'g.', \
+                markersize=1, alpha=0.75, label='Column (45)')
+
+        # tidying up
+        plt.xlabel(xlabel)
+        plt.ylabel('Elevation (m)')
+        plt.ylim(y_lim)
+        plt.xlim(x_lim)
+        plt.legend()
+        plt.title(self.get_formatted_filename())
+
+        return plt.gcf(), plt.gca()
+
+    def find_signal(self, min_cluster_size=10, min_samples=1, cluster_selection_epsilon=0.75,
+                  along_track_scaling=33., in_place=False, show_plot=False):
+        """Using HDBSCAN algorithm to determine signal. Note that we are not employing HDBSCAN for the segmentation of subsurface/surface clusters, only for the detection of clustered data. Any photons detected as part of a cluster are labeled signal.
+
+        For more information, see https://hdbscan.readthedocs.io/en/latest/
+
+        Args:
+            along_track_scaling (int, optional): Scaling factor for along track distance in meters. Defaults to 33 (0.3 sampling * 3 ~ 1m density proportion).
+            min_cluster_size (int, optional): Smallest size grouping which is considered a cluster. Defaults to 15.
+            min_samples (int, optional): Determines clusterer conservativeness, with higher values meaning more conservative results. Defaults to 1.
+            cluster_selection_epsilon (int, optional): Distance within which to merge clusers. Defaults to 0.75 to match average sea surface return width.
+            in_place (bool, optional): Whether to update the profile dataframe with new signal labels or return the label array. Defaults to False.
+
+        Returns:
+            _type_: _description_
+        """
+
+        self.signal_finding = True
+
+        # scale along track and vertical axes
+        # 11m along track for every 1 meter vertical - is2 footprint
+        # dist_ph_along_scaled = (p.data.dist_ph_along - p.data.dist_ph_along.min()) / 11.
+        dist_ph_along_scaled = (
+            self.data.dist_ph_along - self.data.dist_ph_along.min()) / along_track_scaling
+
+        # # tidy up along track data
+        # data = np.vstack([dist_ph_along_scaled, p.data.height - p.data.geoid_z]).T
+        data = np.vstack(
+            [dist_ph_along_scaled, self.data.height - self.data.geoid_z]).T
+
+        # initialize/fit hdbscan clusterer
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size,
+                                    min_samples=min_samples,
+                                    cluster_selection_epsilon=cluster_selection_epsilon).fit(data)
+
+        labels = (clusterer.labels_)
+
+        # remove any photons 50 meters above or 100m below the geoid
+        labels[data[:, 1] > 50] = -1
+        labels[data[:, 1] < -100] = -1
+
+        if show_plot:
+            # plotting things
+            color_palette = sns.color_palette("hls", max(labels)+1)
+            cluster_colors = [color_palette[x] if x >= 0
+                              else (0.5, 0.5, 0.5)
+                              for x in labels]
+            cluster_member_colors = [sns.desaturate(x, p) for x, p in
+                                     zip(cluster_colors, clusterer.probabilities_)]
+
+            plt.figure()
+            plt.scatter(x=data[:, 0], y=data[:, 1], s=10,
+                        linewidth=0, c=cluster_member_colors, alpha=0.8)
+            plt.show()
+
+        if in_place:
+
+            self.data.loc[:, 'signal'] = labels >= 0
+
+            return None
+
+        else:
+
+            return labels, clusterer
+
+    def plot_signal(self):
+
+        # along track distance
+        x = self.data.dist_ph_along - min(self.data.dist_ph_along)
+
+        # geoidal height
+        y = self.data.height - self.data.geoid_z
+
+        # signal
+        s = self.data.signal
+
+        plt.figure()
+        plt.plot(x, y, 'k.', label='Noise')
+        plt.plot(x[s], y[s], 'r.', label='Signal')
+        plt.xlabel('Along Track Distance (m)')
+        plt.ylabel('EGM08 Height (m)')
+        plt.legend(loc='upper right')
+        plt.show()
+
+    @staticmethod
+    def _find_land_points(gdf, bbox):
+
+        # assuming use of geoaois usage for bbox is geoaoi.poly.bounds
+
+        ######## # For Natural earth data implementation as of 1/6/2023
+        # requires that the input gdf has ranged index values i
+        # will need to change if index is changed to time or something
+        # this currently checks point in polygon for EVERY point
+        # would be significantly sped up if evaluated at 10m or something similar
+        # maybe later, fine for now
+        ########
+
+        # try loading the shoreline data
+        try:
+            this_file = os.path.abspath(__file__)
+
+            # navigating relative imports - I think theres probably a better way than this
+            current_dir = os.path.dirname(__file__)  # Get the directory where the current file is stored
+            parent_dir = os.path.dirname(current_dir)  # Get the parent directory of the current directory
+            parent_dir_path = os.path.abspath(parent_dir)
+
+            shoreline_data_path = os.path.join(parent_dir_path, 'shorelines', 'ne_10m_land', 'ne_10m_land.shp')
+            land_polygon_gdf = gpd.read_file(shoreline_data_path, bbox=bbox)
+
+            # continue with getting a new array of 0-or-1 labels for each photon
+            new_labels = np.zeros_like(gdf.is_land.values)
+
+            # update labels for points in the land polygons
+            pts_in = gpd.sjoin(gdf, land_polygon_gdf, predicate='within')
+            land_loc = gdf.index.isin(pts_in.index) # bool
+
+            new_labels[land_loc] = 1
+            new_labels[~land_loc] = 0
+
+            return new_labels
+
+        except Exception as e: 
+            
+            print(e)
+
+            print("Error loading shoreline data, returning -1s for is_land flag")
+
+            # if the shoreline data is not available
+            # return the original label array
+            
+            return -np.ones_like(gdf.is_land.values)
+
+    def clip_to_truth(self, truthpolypath):
+
+        truth_polys = gpd.read_file(truthpolypath).set_crs('epsg:4326')
+
+        pts_in = gpd.sjoin(self.data, truth_polys, predicate='within')
+
+        self.data = pts_in
+
+        return None
+
+
+    @staticmethod
+    def _clip_to_aoi(data, aoi):
+
+        pts_idx = data.within(aoi.poly)
+
+        return data.loc[pts_idx, :].copy()
 
 
 if __name__ == "__main__":
-    from utils import _is_notebook
-    h5_filepath = "/Users/jonathan/Documents/Research/OpenOceans/demos/data/ATL03_20210817155409_08401208_005_01.h5"
 
-    p = Profile.from_h5(h5_filepath, 'gt1r')
+    import sys
+
+    sys.path.append('/Users/jonathan/Documents/Research/OpenOceans')
+    import openoceans as oo
+
+    nc_aoi = oo.GeoAOI.from_geojson(os.path.abspath('demos/demo_data/pamlico.geojson'))
+    h5_filepath = os.path.join(os.getcwd(), 'sample_data', 'north_carolina_ATL03_20191024144104_04230506_005_01.h5')
+    p = oo.Profile.from_h5(h5_filepath, 'gt2r', aoi=nc_aoi, verbose=False)
     print(p)
-    p.explore()
+    print('done! :)')
+    # # Specifying h5 file path for importing ICESat-2 Data
+    # # h5_filepath = "/Users/jonathan/Documents/Research/OpenOceans/demos/data/ATL03_20210817155409_08401208_005_01.h5"
+    # # h5_filepath = '/Users/jonathan/Documents/Research/HTHH_SUMMER_2022/ATL03/ATL03_20220817200811_08691608_005_01.h5'
 
+    # # Use open oceans Profile class to import data
+    # # p = Profile.from_h5(h5_filepath, 'gt2r', verbose=True)
+
+    # # Alternatively, load directly from the sample dataset
+    # p = Profile.load_sample()
+
+    # print('')

@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
@@ -7,13 +6,71 @@ import pandas as pd
 from scipy.signal import medfilt, peak_widths, peak_prominences, find_peaks
 from scipy.stats import exponnorm, norm, skewnorm, expon
 from scipy.optimize import curve_fit
+from scipy.ndimage import gaussian_filter1d
+
 
 # to do
-# - convert turbid intensity back to a transition mult to prevent fitting errors
-# - account for skewed bathymetry peak
 # - try out slope based peak finding
-# - atlas response deconvolution
 # - add error calculations to the waveform
+# - remove noise components
+
+
+def gauss(x, c, mu, sigma):
+    return c * (1/np.sqrt(2*np.pi*sigma**2)) * np.exp(-(x - mu)**2 / (2 * sigma**2))
+
+
+def is_peak_ap(test_peak_mag, test_peak_loc, surf_peak_mag, surf_peak_loc):
+    # removing checks on ratios
+    # saturation can only make up part of a window, lowering the ratio
+    # rely on quality_ph from atl03 to indiciate sensor saturation
+    # remove any peaks that roughly match
+
+    check = False
+    # get dist from surface
+    dist_ap = surf_peak_loc - test_peak_loc
+    ratio_ap = test_peak_mag / surf_peak_mag
+    # print(dist_ap, ratio_ap)
+    # check if distance is within +-0.2m of rough loc
+    # recall dist ap should be negative
+    dist_thresh = 0.25
+
+    # check if ratio is close (+- 2%)
+    # given this as error relative to total surface peak photons
+    # actually a pretty generous bound...
+    ratio_thresh = 0.01
+
+    # (dist, ratio)
+    aps = [(0.45, 2e-2),
+           (0.9, 4e-3),
+           (1.35, 1.9e-3),
+           (1.8, 1e-3),
+           (2.25, 1.5e-3),
+           (4.2, 7.2e-4),
+           (6.45, 3.5e-5),
+           (8.4, 1.7e-5)]
+    i = 0
+    for ap in aps:
+
+        dist_check = np.abs(dist_ap + ap[0]) < dist_thresh
+
+        # see note at top of function
+        # ratio_check = np.abs(ratio_ap - ap[1]) / ap[1] < ratio_thresh
+
+        # # make the ratio error a function of the total peak
+        # ratio_check = np.abs(test_peak_mag - surf_peak_mag *
+        #                      ap[1]) / surf_peak_mag < ratio_thresh
+
+        ratio_check = True
+
+        # print(dist_check, ratio_check)
+
+        if dist_check and ratio_check:
+            check = True
+            break
+
+        i += 1
+
+    return check, i
 
 
 def find_transition_point(turb_intens, surf_prom, surf_loc, surf_std):
@@ -42,7 +99,7 @@ def find_transition_point(turb_intens, surf_prom, surf_loc, surf_std):
 
 
 def noise(depth_bins, surf_prom, surf_loc, surf_std,
-          decay_param, turb_intens,
+          decay_param, trans_mult,
           noise_above, noise_below,
           bathy_prom, bathy_loc, bathy_std):
     """Model for noise in a pseudowaveform. Consists of an above surface noise rate (air) and a below surface noise rate (water column). 
@@ -55,7 +112,7 @@ def noise(depth_bins, surf_prom, surf_loc, surf_std,
         surf_loc (float): Location of the surface return, in meters.
         surf_std (float): Standard deviation of the surface return gaussian model.
         decay_param (float): Decay parameter of the turbidity exponential model component.
-        turb_intens (float): Max turbidity (transition between surface/column model), in photons.
+        trans_mult (float): Distance of turbidity below surface peak, in multiples of STD.
         noise_above (float): Air noise rate, in photons/bin.
         noise_below (float): Subsurface noise rate, in photons/bin.
         bathy_prom (_type_): Not used, provided for consistency of input across model components.
@@ -66,8 +123,10 @@ def noise(depth_bins, surf_prom, surf_loc, surf_std,
         array: Noise model output, matching shape of input depth array.
     """
 
-    transition_point = find_transition_point(
-        turb_intens, surf_prom, surf_loc, surf_std)
+    # transition_point = find_transition_point(
+    #     turb_intens, surf_prom, surf_loc, surf_std)
+
+    transition_point = surf_loc + trans_mult * surf_std
 
     # add base noise rates above and below the water surface
     # ramp between two constant values on either side of the gaussian
@@ -78,7 +137,7 @@ def noise(depth_bins, surf_prom, surf_loc, surf_std,
 
 
 def bathy(depth_bins, surf_prom, surf_loc, surf_std,
-          decay_param, turb_intens,
+          decay_param, trans_mult,
           noise_above, noise_below,
           bathy_prom, bathy_loc, bathy_std):
     """Gaussian model for the seafloor return. Currently intended to be added to the noise model.
@@ -89,7 +148,7 @@ def bathy(depth_bins, surf_prom, surf_loc, surf_std,
         surf_loc (float): Not used, provided for consistency of input across model components.
         surf_std (float): Not used, provided for consistency of input across model components.
         decay_param (float): Not used, provided for consistency of input across model components.
-        turb_intens (float): Not used, provided for consistency of input across model components.
+        trans_mult (float): Not used, provided for consistency of input across model components.
         noise_above (float): Not used, provided for consistency of input across model components.
         noise_below (float): Not used, provided for consistency of input across model components.
         bathy_prom (float): Peak prominence of the seafloor return, in photons.
@@ -105,7 +164,7 @@ def bathy(depth_bins, surf_prom, surf_loc, surf_std,
 
 
 def surface(depth_bins, surf_prom, surf_loc, surf_std,
-            decay_param, turb_intens,
+            decay_param, trans_mult,
             noise_above, noise_below,
             bathy_prom, bathy_loc, bathy_std):
     """Gaussian model for the water surface return. Returns values from the top of the water surface, to the start of the column turbidity model below surface, as defined by turbidity/decay model inputs. Currently intended to be added with other model components (noise, turbidity).
@@ -116,7 +175,7 @@ def surface(depth_bins, surf_prom, surf_loc, surf_std,
         surf_loc (float): Location of the surface return, in meters.
         surf_std (float): Standard deviation of the surface return gaussian model.
         decay_param (float): Decay parameter of the turbidity exponential model component.
-        turb_intens (float): Max turbidity (transition between surface/column model), in photons.
+        trans_mult (float): Distance of turbidity below surface peak, in multiples of STD.
         noise_above (float): Not used, provided for consistency of input across model components.
         noise_below (float): Not used, provided for consistency of input across model components.
         bathy_prom (float): Not used, provided for consistency of input across model components.
@@ -130,8 +189,10 @@ def surface(depth_bins, surf_prom, surf_loc, surf_std,
 
     # TRANSITION point from gaussian surface to exponential model
     # the max intensity of the exponential curve should match the value of the gaussian model at the transition
-    transition_point = find_transition_point(
-        turb_intens, surf_prom, surf_loc, surf_std)
+    # transition_point = find_transition_point(
+    #     turb_intens, surf_prom, surf_loc, surf_std)
+
+    transition_point = surf_loc + surf_std * trans_mult
 
     # SURFACE GAUSSIAN peak values
     y_out = np.zeros_like(depth_bins)
@@ -143,7 +204,7 @@ def surface(depth_bins, surf_prom, surf_loc, surf_std,
 
 
 def turbidity(depth_bins, surf_prom, surf_loc, surf_std,
-              decay_param, turb_intens,
+              decay_param, trans_mult,
               noise_above, noise_below,
               bathy_prom, bathy_loc, bathy_std):
     """Exponential decay model for water column / turbidity. Returns values from the bottom of the water surface to the max depth of the waveform. Currently intended to be added with other model components (noise, surface).
@@ -154,7 +215,7 @@ def turbidity(depth_bins, surf_prom, surf_loc, surf_std,
         surf_loc (float): Location of the surface return, in meters.
         surf_std (float): Standard deviation of the surface return gaussian model.
         decay_param (float): Decay parameter of the turbidity exponential model component.
-        turb_intens (float): Max turbidity (transition between surface/column model), in photons.
+        trans_mult (float): Distance of turbidity below surface peak, in multiples of STD.
         noise_above (float): Not used, provided for consistency of input across model components.
         noise_below (float): Not used, provided for consistency of input across model components.
         bathy_prom (float): Not used, provided for consistency of input across model components.
@@ -170,8 +231,16 @@ def turbidity(depth_bins, surf_prom, surf_loc, surf_std,
 
     # TRANSITION point from gaussian surface to exponential model
     # the max intensity of the exponential curve should match the value of the gaussian model at the transition
-    transition_point = find_transition_point(
-        turb_intens, surf_prom, surf_loc, surf_std)
+    # transition_point = find_transition_point(
+    #     turb_intens, surf_prom, surf_loc, surf_std)
+
+    transition_point = surf_loc + surf_std * trans_mult  # depth
+
+    turb_intens = surf_prom * np.sqrt(np.pi * 2 * surf_std**2) * norm.pdf(transition_point,
+                                                                          loc=surf_loc,
+                                                                          scale=surf_std)  # actual value on the normal dist
+
+    # calculating starting intensity of decay from surface gaussian and transition
 
     # EXPONENTIAL decay values
     # model depth values are measured from the surface peak location
@@ -181,14 +250,20 @@ def turbidity(depth_bins, surf_prom, surf_loc, surf_std,
 
     z_depth = depth_bins[depth_bins >= transition_point] - surf_loc
 
-    y_out[depth_bins >= transition_point] = (turb_intens / np.exp(decay_param * (transition_point - surf_loc))) \
+    # why do I have a division here?
+    y_out[depth_bins >= transition_point] = \
+        (turb_intens / np.exp(decay_param * (transition_point - surf_loc))) \
         * np.exp(decay_param*z_depth)
+
+    # y_out[depth_bins >= transition_point] = \
+    #     (turb_intens) \
+    #     * np.exp(decay_param*z_depth)
 
     return y_out
 
 
 def histogram_model(depth_bins, surf_prom, surf_loc, surf_std,
-                    decay_param, turb_intens,
+                    decay_param, trans_mult,
                     noise_above, noise_below,
                     bathy_prom, bathy_loc, bathy_std):
     """Combines all the histogram model components into one function. 
@@ -202,7 +277,7 @@ def histogram_model(depth_bins, surf_prom, surf_loc, surf_std,
         surf_loc (float): Location of the surface return, in meters.
         surf_std (float): Standard deviation of the surface return gaussian model.
         decay_param (float): Decay parameter of the turbidity exponential model component.
-        turb_intens (float): Max turbidity (transition between surface/column model), in photons.
+        trans_mult (float): Distance of turbidity below surface peak, in multiples of STD.
         noise_above (float): Air noise rate, in photons/bin.
         noise_below (float): Subsurface noise rate, in photons/bin.
         bathy_prom (float): Peak prominence of the seafloor return, in photons.
@@ -216,22 +291,22 @@ def histogram_model(depth_bins, surf_prom, surf_loc, surf_std,
     # curve_fit does not appreciate keyword arguments
 
     y_noise = noise(depth_bins, surf_prom, surf_loc, surf_std,
-                    decay_param, turb_intens,
+                    decay_param, trans_mult,
                     noise_above, noise_below,
                     bathy_prom, bathy_loc, bathy_std)
 
     y_surface = surface(depth_bins, surf_prom, surf_loc, surf_std,
-                        decay_param, turb_intens,
+                        decay_param, trans_mult,
                         noise_above, noise_below,
                         bathy_prom, bathy_loc, bathy_std)
 
     y_bathy = bathy(depth_bins, surf_prom, surf_loc, surf_std,
-                    decay_param, turb_intens,
+                    decay_param, trans_mult,
                     noise_above, noise_below,
                     bathy_prom, bathy_loc, bathy_std)
 
     y_turbidity = turbidity(depth_bins, surf_prom, surf_loc, surf_std,
-                            decay_param, turb_intens,
+                            decay_param, trans_mult,
                             noise_above, noise_below,
                             bathy_prom, bathy_loc, bathy_std)
 
@@ -311,10 +386,10 @@ def get_peak_info(hist, depth, verbose=False):
                              len(depth_padded),
                              depth[-1] + depth_bin_size)  # use zbin for actual fcn
 
-    dist_req_between_peaks = 0.5  # m
+    dist_req_between_peaks = 0.49999  # m
 
     if dist_req_between_peaks/depth_bin_size < 1:
-        warn_msg = '''Vertical bin resolution is greater than the req. min. distance 
+        warn_msg = '''get_peak_info(): Vertical bin resolution is greater than the req. min. distance 
         between peak. Setting req. min. distance = depth_bin_size. Results may not be as expected.
         '''
         if verbose:
@@ -325,10 +400,10 @@ def get_peak_info(hist, depth, verbose=False):
     # so zeros are inserted on either end of the histogram and output indexes adjusted after
 
     # distance = distance required between peaks - use approx 0.5 m, accepts floats >=1
-    # prominence = required peak prominence - use 1 to return all
+    # prominence = required peak prominence
     pk_i, pk_dict = find_peaks(np.pad(hist, 1),
                                distance=dist_req_between_peaks/depth_bin_size,
-                               prominence=1)
+                               prominence=0.1)
 
     # evaluating widths with find_peaks() seems to be using it as a threshold - not desired
     # width = required peak width (index) - use 1 to return all
@@ -392,9 +467,9 @@ def get_peak_info(hist, depth, verbose=False):
     pk_dict['depth'] = depth[pk_dict['i']]
 
     pk_df = pd.DataFrame.from_dict(pk_dict, orient='columns')
-    pk_df.sort_values(by='heights', inplace=True, ascending=False)
+    pk_df.sort_values(by='prominences', inplace=True, ascending=False)
 
-    # is prominence truly the best way to sort peaks?
+    # is height or prominence the best way to sort peaks?
 
     return pk_df
 
@@ -421,7 +496,9 @@ def estimate_model_params(hist, depth, peaks=None, verbose=False):
         bounds (DataFrame): Two-column dataframe consisting of upper and lower bounds on each model parameter. Required for curve fitting to ensure reasonable results and convergent solution. 
         quality_flag (int): Flag summarizing parameter confidence.
     """
-    if ~isinstance(peaks, pd.DataFrame):
+    if isinstance(peaks, pd.DataFrame):
+        pass
+    else:
         peaks = get_peak_info(hist, depth)
 
     pk_df = peaks
@@ -431,8 +508,8 @@ def estimate_model_params(hist, depth, peaks=None, verbose=False):
                   'surf_loc': np.nan,  # surface peak location (m)
                   'surf_std': np.nan,  # surface peak deviation (m)
                   'decay_param': np.nan,  # decay param, important to start with a low value
-                  # starting intensity of turbid decay model element (count)
-                  'turb_intens': np.nan,
+                  # starting depth of turbid decay model element (std multiples)
+                  'trans_mult': np.nan,
                   # noise rate above the surface (count)
                   'noise_above': np.nan,
                   # noise rate below the surface (count)
@@ -451,8 +528,8 @@ def estimate_model_params(hist, depth, peaks=None, verbose=False):
                    'surf_loc': zero_val,  # surface peak location (m)
                    'surf_std': zero_val,  # surface peak deviation (m)
                    'decay_param': zero_val,  # decay param, important to start with a low value
-                   # starting intensity of turbid decay model element (count)
-                   'turb_intens': zero_val,
+                   # starting depth of turbid decay model element (std multiples)
+                   'trans_mult': zero_val,
                    # noise rate above the surface (count)
                    'noise_above': zero_val,
                    # noise rate below the surface (count)
@@ -467,8 +544,8 @@ def estimate_model_params(hist, depth, peaks=None, verbose=False):
                    'surf_loc': 2*zero_val,  # surface peak location (m)
                    'surf_std': 2*zero_val,  # surface peak deviation (m)
                    'decay_param': 2*zero_val,  # decay param, important to start with a low value
-                   # starting intensity of turbid decay model element (count)
-                   'turb_intens': 2*zero_val,
+                   # # starting depth of turbid decay model element (std multiples)
+                   'trans_mult': 2*zero_val,
                    # noise rate above the surface (count)
                    'noise_above': 2*zero_val,
                    # noise rate below the surface (count)
@@ -483,36 +560,174 @@ def estimate_model_params(hist, depth, peaks=None, verbose=False):
 
     # ##################### QUALITY CHECKS ON HISTOGRAM ##################################
 
-    # first, check that the histogram has at least 5 bins with actual data
+    # first, check that the histogram has at least 0.5m with actual data
     # also takes care of the 'no peaks case'
-    if np.sum(hist != 0) <= 1/depth_bin_size:
+    if np.sum(hist != 0) <= 0.5/depth_bin_size:
         quality_flag = -1
 
         bounds = pd.DataFrame([lower_bound, upper_bound], index=[
             'lower', 'upper']).T
         params_out = pd.Series(params_out, name='initial')
-        return params_out, bounds, quality_flag
+        bathy_quality_ratio = -1
+        return params_out, bounds, quality_flag, bathy_quality_ratio
 
     # next, check for clear primary/surface peak within bins with data
-    if np.max(hist)/np.median(hist[np.nonzero(hist)]) < 3:
-        # use nonzero because binning window may be larger than noise block
-        # dont bother fitting, its probably noise only
-        quality_flag = -2
+    # if np.max(hist)/np.median(hist[np.nonzero(hist)]) < 3:
 
+    #     # this is problematic when the only signal is a strong peak, median will be high, removing
+
+    #     # use nonzero because binning window may be larger than noise block
+    #     # dont bother fitting, its probably noise only
+    #     quality_flag = -2
+
+    #     bounds = pd.DataFrame([lower_bound, upper_bound], index=[
+    #         'lower', 'upper']).T
+    #     params_out = pd.Series(params_out, name='initial')
+    #     return params_out, bounds, quality_flag
+
+    # need a way to avoid chunks of random noise
+    # require there be 1 peak at least X% higher than the next peak 
+    # kind of like the two peak check later on
+
+    if pk_df.shape[0] > 2:
+        # two similar intensity returns can be surface/bathy
+        # but 3 similar intensity returns are more likely to be noise than anything else
+        similar_secondary = ((pk_df.iloc[1].prominences) / pk_df.iloc[0].prominences) > 0.6
+        similar_tertiary = ((pk_df.iloc[2].prominences) / pk_df.iloc[0].prominences) > 0.6
+
+        if similar_secondary and similar_tertiary:
+            # more likely to be noise than bathy
+            # weak signal all around
+            quality_flag = -3
+            bounds = pd.DataFrame([lower_bound, upper_bound], index=[
+                'lower', 'upper']).T
+            params_out = pd.Series(params_out, name='initial')
+            bathy_quality_ratio = -1
+            return params_out, bounds, quality_flag, bathy_quality_ratio
+
+
+    if pk_df.shape[0] == 0:
+        # no peaks, exit
+        quality_flag = -2
         bounds = pd.DataFrame([lower_bound, upper_bound], index=[
             'lower', 'upper']).T
         params_out = pd.Series(params_out, name='initial')
-        return params_out, bounds, quality_flag
+        bathy_quality_ratio = -1
+        return params_out, bounds, quality_flag, bathy_quality_ratio
 
     # ########################## ESTIMATING SURFACE PEAK PARAMETERS #############################
 
     # Surface return - largest peak
     pk_df.sort_values(by='prominences', inplace=True, ascending=False)
-    surf_pk = pk_df.iloc[0]
 
-    params_out['surf_loc'] = surf_pk.depth
-    params_out['surf_std'] = surf_pk.sigma_est
-    params_out['surf_prom'] = surf_pk.prominences
+    # if the top two peaks are within 20% of each other
+    # go with the higher elev one/the one closest to 0m
+    # mitigating super shallow, bright reefs where seabed is actually brighter
+
+    
+    if pk_df.shape[0] > 1:
+
+        # check if second peak is greater than 60% the height of the primary
+        two_tall_peaks = ((pk_df.iloc[1].prominences) / pk_df.iloc[0].prominences) > 0.6
+
+        if two_tall_peaks:
+
+            # use the peak above the other
+            # using the one nearest to 0 might have issues with tides
+            pks2 = pk_df.iloc[[0, 1]]
+            peak_at_0 = np.abs(pks2.depth).argmin()
+            peak_above = pks2.depth.argmin()
+            
+            if (peak_at_0 != peak_above):
+                if verbose:
+                    print('Huh, you found a chunk you with 2 surfaces that dont make sense! Check that out!')
+
+            surf_pk = pk_df.iloc[peak_above]
+
+        else:
+            surf_pk = pk_df.iloc[0]
+    else:
+        surf_pk = pk_df.iloc[0]
+
+
+
+    # but this is a rough estimate of the surface peak assuming perfect gaussian on peak
+    # surface peak is too important to leave this rough estimate
+    # surf peak can have a turbid subsurface tail, too
+
+    # dogleg detection - where does the surface peak end and become subsurface noise/signal?
+    # basically mean value theorem applied to the subsurface histogram slope
+    # how to know when the histogram starts looking like possible turbidity
+    # we assume the surface should dissipate after say X meters depth, but will sooner in actuality
+    # therefore, the actual numerical slope must cross the threshold required to dissipate after X meters at some point
+    # where X is a function of surface peak width
+
+    # what if the histogram has a rounded surface peak, or shallow bathy peaks?
+    # rounded surface peak would be from pos to neg (excluded)
+    # shallow bathy peaks would be the 2nd or 3rd slope threshold crossing
+    # some sketches with the curve and mean slope help show the sense behind this
+
+    # we'll use this to improve our estimate of the surface gaussian early on
+    # dog leg detection start
+    dissipation_range = 3  # m #surf_pk.sigma_est * 6
+    z_bin_approx = np.diff(depth)[0]
+    slope_thresh = -surf_pk.heights / (dissipation_range/z_bin_approx)
+    diffed_subsurf = np.diff(hist[np.int64(surf_pk.i):])
+
+    # detection of slope decreasing in severity, crossing the thresh
+    sign_ = np.sign(diffed_subsurf - slope_thresh)
+    # ie where sign changes (from negative to positive only)
+    sign_changes_i = np.where(
+        (sign_[:-1] != sign_[1:]) & (sign_[:-1] < 0))[0] + 1
+
+    if len(sign_changes_i) == 0:
+        # poorly conditioned surface peak
+        # tbh no idea why this would even hit if we made it this far
+        no_sign_change = True
+        print('Check for poorly conditioned surface peak.')
+        quality_flag = -2
+
+        bounds = pd.DataFrame([lower_bound, upper_bound], index=[
+            'lower', 'upper']).T
+        params_out = pd.Series(params_out, name='initial')
+        bathy_quality_ratio = -1
+        return params_out, bounds, quality_flag, bathy_quality_ratio
+
+    else:
+        # calculate dogleg corner details
+        transition_i = np.int64(surf_pk.i) + \
+            sign_changes_i[0]  # full hist index
+        transition_depth = depth[transition_i]
+        transition_mult = (transition_depth -
+                           surf_pk.depth) / surf_pk.sigma_est
+    # end dog leg detection
+
+    # just fit the gaussian here, why not improve your guess
+    surf_range_i = np.arange((np.int64(surf_pk.i) - sign_changes_i[0] - 1),
+                             (np.int64(surf_pk.i) + sign_changes_i[0] + 1))
+
+    p_init = [surf_pk.mag_scaling, surf_pk.depth, surf_pk.sigma_est]
+
+    [_surf_mag_scale, _surf_loc, _surf_sigma] = p_init
+
+    try:
+        [_surf_mag_scale, _surf_loc, _surf_sigma], _ = curve_fit(gauss,
+                                                                 depth[surf_range_i],
+                                                                 hist[surf_range_i],
+                                                                 p0=p_init,
+                                                                 bounds=([zero_val, -np.inf, zero_val],
+                                                                         [3*surf_pk.mag_scaling, np.inf, np.inf]))
+    except:
+        pass
+
+    params_out['surf_loc'] = _surf_loc
+    params_out['surf_std'] = _surf_sigma
+    params_out['surf_prom'] = _surf_mag_scale / \
+        np.sqrt(2 * np.pi * _surf_sigma**2)
+
+    # params_out['surf_loc'] = surf_pk.depth
+    # params_out['surf_std'] = surf_pk.sigma_est
+    # params_out['surf_prom'] = surf_pk.prominences
 
     # enable appropriate fitting bounds for surface model
     lower_bound['surf_loc'] = -np.inf
@@ -523,14 +738,17 @@ def estimate_model_params(hist, depth, peaks=None, verbose=False):
     upper_bound['surf_std'] = np.inf
     upper_bound['surf_prom'] = 2*hist.max()
 
-    # estimate noise rates above and below the surface peak
+    # estimate noise rates above and below the surface peak - UPDATE THIS ITS NOT GREAT
 
     # dont use ips, it will run to the edge of an array with a big peak
     # using std estimate of surface peak instead
     surface_peak_left_edge_i = np.int64(
         np.floor(surf_pk.i - 2.5 * surf_pk.sigma_est_left_i))
-    surface_peak_right_edge_i = np.int64(
-        np.ceil(surf_pk.i + 2.5 * surf_pk.sigma_est_right_i))
+
+    # using more detailed estimate of peak edge
+    surface_peak_right_edge_i = transition_i
+    # surface_peak_right_edge_i = np.int64(
+    #     np.ceil(surf_pk.i + 2.5 * surf_pk.sigma_est_right_i))
 
     if surface_peak_left_edge_i <= 0:
         # no bins above the surface
@@ -562,10 +780,6 @@ def estimate_model_params(hist, depth, peaks=None, verbose=False):
 
     # If no peaks below the primary surface peak
     if bathy_pk_df.shape[0] == 0:
-
-        # set quality flag to indicate no bathy,but good surface
-        quality_flag = 1
-
         # leave bathy peak fitting params set to 0
 
         # set bathy peak values to 0
@@ -574,18 +788,25 @@ def estimate_model_params(hist, depth, peaks=None, verbose=False):
         params_out['bathy_prom'] = zero_val
 
         # may still be subsurface noise
-        params_out['noise_below'] = np.median(
-            hist[int(surface_peak_right_edge_i):]) + zero_val
+        # commenting out for now, will assume subsurface noise picked up by decay
+
+        # params_out['noise_below'] = np.median(
+        #     hist[int(surface_peak_right_edge_i):]) + zero_val
+        
+        # note the parameter is still fittable
+        params_out['noise_below'] = zero_val
+
         lower_bound['noise_below'] = zero_val
         upper_bound['noise_below'] = hist.max()
 
         # may still have turbidity without subsurface peaks
         # e.g. in the case of a perfectly smooth turbid descent, or with coarsely binned data
         # continuing to turbidity estimation...
-        water_column_right_edge_i = len(hist) - 1
 
     # If some peak below the primary peak, quick checks for indexing, add as needed
-    if bathy_pk_df.shape[0] > 0:
+    else:  # df.shape always non negative
+
+        # this section can be improved
 
         # Very shallow peak, with limited data below
         # Surface range can extend beyond the end of the array/bathy
@@ -607,7 +828,7 @@ def estimate_model_params(hist, depth, peaks=None, verbose=False):
         upper_bound['bathy_loc'] = depth[np.nonzero(hist)[
             0][-1]] + 5  # m
 
-        # Prominince limited by the surface peak height
+        # Prominence limited by the surface peak height
         lower_bound['bathy_prom'] = zero_val
         upper_bound['bathy_prom'] = surf_pk.heights
 
@@ -637,204 +858,306 @@ def estimate_model_params(hist, depth, peaks=None, verbose=False):
             lower_bound['noise_below'] = zero_val
             upper_bound['noise_below'] = 2*zero_val
         else:
-            params_out['noise_below'] = np.median(
-                subsurface_wout_peak) + zero_val  # eps to avoid 0 in fit
+            # see where this line is commented out above for details
+        
+            # params_out['noise_below'] = np.median(
+            #     subsurface_wout_peak) + zero_val  # eps to avoid 0 in fit
+            
+            params_out['noise_below'] = zero_val
+            
             lower_bound['noise_below'] = zero_val
             upper_bound['noise_below'] = hist.max()
-
-        # ##################### ESTIMATE QUALITY/BATHY CONFIDENCE #########################
-
-        # If multiple subsurface peaks, compare prominences to get a confidence score
-        if bathy_pk_df.shape[0] > 1:
-            # more than one peak with similar prominance makes it more likely to be noise
-            second_pk = bathy_pk_df.iloc[1]
-            if bathy_pk.prominences <= (1.5 * second_pk.prominences):
-                quality_flag = 2
-
-            else:
-                quality_flag = 3
-
-        # If only 1 subsurface peak, compare prominence to subsurface noise to get conf.
-        # suspect this wont actually happen often unless
-        # - zbinsize is large
-        # - bathy peak very close to surface, night time, no noise
-        # - testing sample histograms
-        else:
-            if bathy_pk.prominences < (2 * params_out['noise_below']):
-                quality_flag = 2
-            else:
-                quality_flag = 3
-
-        ####################################################################################
 
     # ###################### ESTIMATE TURBIDITY EXPONENTIAL PARAMETERS ############################
 
     # Using water column photon data to replace an exponential somewhere the bottom of the water surface
     # Then mapping it back to physically meaningful parameters with some
     # back and forth between gaussians and exponentials and fun indexing
-    # This is the roughest initialization in this model imo,
-    # because it assumes that the exponential begins
-    # near 1.5 STD below the surface peak. Recommend fitting for more precise outcomes.
 
-    # - turbid intensity - the max photon count value at which the exponential decay begins
+    # - transition mult - how many multiples of surf_peak sigma below the surface to start turb model
     # - decay parameter - exponential decay parameter in terms of DEPTH BELOW THE SURFACE PEAK
 
-    # Consider only subsurface data between 1.5x std transition point and the bathy peak edge
-    # approx the transition point at 1.5 std to roughly isolate the water column data
-    transition_approx = 1.5
-    water_column_left_edge_i = np.int64(np.ceil(surf_pk.i +
-                                                transition_approx * surf_pk.sigma_est_right_i))
+    # briefly consider two possibilities - a clear bathy peak and a less clear bathy peak
+    # for a very clear bathy peak we should remove it before estimating turbidity
+    # for a less clear bathy peak it shouldnt have as much of an effect and so we may leave it in
+    # and we cant confidently remove it anyways
 
-    water_column_i = np.arange(
-        water_column_left_edge_i, water_column_right_edge_i)
-    # remove 0 values from consideration so they dont blow up log values
-    water_column_i = water_column_i[np.nonzero(hist[water_column_i])[0]]
-    water_column_hist = hist[water_column_i]
-    water_column_z = depth[water_column_i]
-    water_column_depth = water_column_z - surf_pk.depth
+    # # if high confidence bathy, get a deconvolved subsurface histogra hist_t
+    # high_conf_mult_peaks = False
+    # high_conf_single_peak = False
+    # if (bathy_pk_df.shape[0] > 1):
 
-    if len(water_column_i) < 2:
-        params_out['turb_intens'] = 1
-        params_out['decay_param'] = -zero_val
+    #     if (bathy_pk.prominences > (3 * bathy_pk_df.iloc[1].prominences)):
+    #         # bathy peak is more than thrice as prominent as the next highest peak
+    #         high_conf_mult_peaks = True
 
-        # also loosening the bounds here so curve_fit doesnt get stuck
-        lower_bound['decay_param'] = -1000  # -np.inf
-        # too much flexibility makes it possible for curve fit to accidentally hit a divide by 0
-        # hopefully this problem can disappear after things are reformulated but i want to know what works
-        upper_bound['decay_param'] = -zero_val
+    # elif (bathy_pk_df.shape[0] == 1):
 
-        lower_bound['turb_intens'] = 1
-        upper_bound['turb_intens'] = surf_pk.heights
+    #     if (bathy_pk.prominences > ((1/3) * params_out['surf_prom'])):
+    #         # bathy peak is more than a third as tall as the main surface peak
+    #         high_conf_single_peak = True
 
-        # use magnitude of bathy peak for very shallow peaks
-        # likely that prominence is being skewed by edging up against subsurface noise
-        if bathy_pk_df.shape[0] > 0:
-            params_out['bathy_prom'] = bathy_pk.heights
+    # if high_conf_mult_peaks or high_conf_single_peak:
 
-        pass
+    if (bathy_pk_df.shape[0] > 0):
+        # remove bathy peak from depth consideration
 
-        # this case is meant to address very very shallow bathymetry (1 or 2 bins below surface)
-        # in which case, turbidity doesnt matter
-        # but 'peak prominence' may be misrepresentative if the left side of the bathy peak
-        # edges up against the primary peak
-        # therefore, instead of using bathy prominence, consider using (magnitude - subsurface noise rate)
-        # not doing this until all the other code is worked out at the least, though
-        # i suspect it will bias towards the overclassification of turbidity as bathy
+        # # adding +-1 to extend window just to be safe
+        bathy_range_i = np.arange(np.int64(bathy_pk.i - np.floor(3 * bathy_pk.sigma_est_left_i) - 1),
+                                  min(np.int64(bathy_pk.i + np.ceil(3 * bathy_pk.sigma_est_right_i) + 1), len(hist)))
+            # min check above to make sure we dont go beyond the length of the histogram data
+        # get indexer for non bathy data below the surface
+        not_bathy_subsurface = np.full((len(hist), ), True)
+        # remove surface and higher
+        not_bathy_subsurface[:transition_i] = False
+        not_bathy_subsurface[bathy_range_i] = False
 
-        # return
+        hist_t = hist[not_bathy_subsurface]
+        depth_t = depth[not_bathy_subsurface]
 
     else:
-        # first, initialize turbidity fitting/values now that we can estimate turbidity
-        lower_bound['decay_param'] = -1000  # -np.inf
-        # too much flexibility makes it possible for curve fit to accidentally hit a divide by 0
-        # after overfitting the decay parameter to -400 and more
-        # hopefully this problem can disappear after things are reformulated but i want to know what works
-        upper_bound['decay_param'] = -zero_val
+        hist_t = hist[transition_i:]
+        depth_t = depth[transition_i:]
 
-        lower_bound['turb_intens'] = 1
-        upper_bound['turb_intens'] = params_out['surf_prom'] * 0.5
+    # hist/depth _t represent turbidity specific depth and histogram data
+    # starts at the transition point and MAY have depth bins missing (removed bathy peak)
 
-        # next, get the decay parameter from the water column data
+    # picking back up from transition point detection used in surface peak fitting
+    # set up parameters and quality checks up to this point
+    no_sign_change = False
+    not_enough_subsurface = False
+    too_far_subsurface = False
 
-        # when plotted logarithmically, slope corresponds to the decay parameter
-        # linear fit to get mean slope, use that
+    lower_bound['trans_mult'] = 0.5
+    upper_bound['trans_mult'] = 10 + zero_val
+    lower_bound['decay_param'] = -1000  # -np.inf
+    upper_bound['decay_param'] = -zero_val
 
-        # note: can reconstruct the original data with np.exp(b) * np.exp(m * water_column_z)
+    if no_sign_change == False:
+        # transition point finding went ok earlier
+        # continue with some quality checks
+        # non_zero_column_bins = np.argwhere(hist[transition_i:] > 0).flatten()
+        non_zero_column_bins = np.argwhere(hist_t > 0).flatten()
 
-        # _i: mapped to integer indices, _z: mapped to height, _d: mapped to depth
-        # may get rid of some versions later but currently useful for debugging
+        if (len(non_zero_column_bins) < 3):
+            # not enough data to actually evaluate 'turbidity'
+            not_enough_subsurface = True
 
-        # get point of intersection between modeled exp and modeled surface gauss
-        # increase resolution for better intersection
+        if transition_mult > 10:
+            # out of bounds for reasonable value
+            too_far_subsurface = True
 
-        # decay modeled in terms of integer index
-        m_i, b_i = np.polyfit(water_column_i, np.log(water_column_hist), 1)
-        surf_col_i = np.arange(surf_pk.i, water_column_right_edge_i, 1e-2)
-        surf_pk_model_i = surf_pk.mag_scaling_i * \
-            norm.pdf(surf_col_i, surf_pk.i, surf_pk.sigma_est_i)
-        turbid_model_i = np.exp(b_i) * np.exp(m_i * surf_col_i)
-        model_diff_i = np.abs(surf_pk_model_i - turbid_model_i)
+    if no_sign_change or not_enough_subsurface or too_far_subsurface:
+        # null case - smooth transition from peak to nothing
+        # or just too few bins to reasonably calculate turbidity
+        # or first rise in photons is too far below the surface to be turb.
+        params_out['trans_mult'] = 10  # get far below the surface gauss
+        params_out['decay_param'] = -zero_val  # send to zero asap
+
+    else:
+        # continue estimating turbidity decay parameter
+        # deepest_nonzero_bin_edge = np.argwhere(hist > 0).flatten()[-1] + 1
+        deepest_nonzero_bin_edge = np.argwhere(hist_t > 0).flatten()[-1] + 1
+        # extra +1 due to range behavior, not actual data
+        # wc = water column
+        # wc_i = np.arange(transition_i, deepest_nonzero_bin_edge + 1)
+        wc_i = np.arange(0, deepest_nonzero_bin_edge)
+
+        # getting the decay parameter *in terms of DEPTH* to preserve any physical mapping
+        # technically more of an inverted height than a depth
+        # wc_z = depth[wc_i]
+        # wc_hist_ = hist[wc_i]
+        wc_z = depth_t[wc_i]
+        wc_hist_ = hist_t[wc_i]
+        wc_depth_ = wc_z - params_out['surf_loc']  # true depth below surface
+
+        # ignoring zero bins so log doesnt explode
+        wc_hist = wc_hist_[wc_hist_ > 0]
+        wc_depth = wc_depth_[wc_hist_ > 0]
+
+        # remember these data might be missing a chunk where a bathy peak was when indexing
 
         # decay modeled in terms of depth
-        m, b = np.polyfit(water_column_z, np.log(water_column_hist), 1)
-        surf_col_z = np.arange(
-            surf_pk.depth, depth[water_column_right_edge_i], 1e-2)
-        surf_pk_model_z = surf_pk.mag_scaling * \
-            norm.pdf(surf_col_z, surf_pk.depth, surf_pk.sigma_est)
-        turbid_model_z = np.exp(b) * np.exp(m * surf_col_z)
-        model_diff_z = np.abs(surf_pk_model_z - turbid_model_z)
+        # weighting to account for deviation in large hist values getting scaled
+        # and to prioritize shallow data
+        # inverse dist assuming max depth of 50m * log scaling weights
+        weights = np.sqrt(wc_hist) * (1 - wc_depth/50)
+        m, b = np.polyfit(wc_depth, np.log(wc_hist), 1, w=weights)
 
-        # decay modeled in terms of depth
-        m_d, b_d = np.polyfit(water_column_depth,
-                              np.log(water_column_hist), 1)
-        surf_col_d = np.arange(0, max(water_column_depth), 1e-2)
-        surf_pk_model_d = surf_pk.mag_scaling * \
-            norm.pdf(surf_col_d + surf_pk.depth,
-                     surf_pk.depth, surf_pk.sigma_est)
-        turbid_model_d = np.exp(b_d) * np.exp(m_d * surf_col_d)
-        model_diff_d = np.abs(surf_pk_model_d - turbid_model_d)
+        # would typically use sqrt(y) for weights, but we know all values are pos
+        # and we really really care about those values right near the surface
 
-        # if models never intersect
-        if model_diff_d.min() < 1e-2:
-            i_inter_d = model_diff_d.argmin()
-            intersect_d = surf_col_d[i_inter_d]
+        turb_intens = np.exp(b)
+        decay_param = m
 
-            i_inter_i = model_diff_i.argmin()
-            intersect_i = surf_col_i[i_inter_i]
-
-            i_inter_z = model_diff_z.argmin()
-            intersect_z = surf_col_z[i_inter_z]
-        else:
-            # use the left most bound of the water column, in terms of depth
-            intersect_d = water_column_depth.min()
-            intersect_i = water_column_left_edge_i
-            intersect_z = water_column_z.min()
-
-        # photon count at intersection should be effectively the same between models
-        intersect_val = np.exp(b_i) * np.exp(m_i * intersect_i)
-        #intersec_val = surf_pk.mag_scaling_i * norm.pdf(intersect_i, surf_pk.i, surf_pk.sigma_est_i)
-
-        params_out['turb_intens'] = intersect_val - \
-            params_out['noise_below']
-
-        # Checks / final setting of turbidity parameters
-        if params_out['turb_intens'] < lower_bound['turb_intens']:
-
-            warn_msg = '''Attempted to set turbidity intensity value below lower bound of {}. 
-            Using lower bound for initial turbidity intensity value...'''.format(
-                lower_bound['turb_intens'])
-
-            if verbose:
-                warnings.warn(warn_msg)
-
-            params_out['turb_intens'] = lower_bound['turb_intens']
-
-        elif params_out['turb_intens'] > upper_bound['turb_intens']:
-
-            warn_msg = '''Attempted to set turbidity intensity value higher than the surface peak. 
-            Using upper bound for initial turbidity intensity value...'''
-
-            if verbose:
-                warnings.warn(warn_msg)
-
-            params_out['turb_intens'] = upper_bound['turb_intens']
-
-        # using decay parameter in terms of depth because it has physical meaning built in
-        # required to be negative, in bound
-        if (m_d < -zero_val) & (m_d > lower_bound['decay_param']):
-            params_out['decay_param'] = m_d
-
-        else:
+        if (decay_param > -zero_val) or (decay_param < -1000) \
+                or (turb_intens > surf_pk.heights) or (turb_intens < 0):
+            # poorly conditioned decay component, use null values
+            params_out['trans_mult'] = 10
             params_out['decay_param'] = -zero_val
 
-            if verbose:
-                warnings.warn(
-                    'Attempted to set decay parameter out of bounds, using zero value instead.')
+        else:
+            # we need to recalculate our transition point now that we have a turbidity model
+            # where does our turbidity model intersect with our surface gaussian?
+
+            # reconstructing higher res versions of these models and min(diff) them
+
+            surf_col_z = np.arange(
+                params_out['surf_loc'], depth[(np.argwhere(hist > 0).flatten()[-1])], 1e-3)
+
+            surf_pk_model_z = params_out['surf_prom'] * (np.sqrt(2 * np.pi*params_out['surf_std']**2)) * \
+                norm.pdf(surf_col_z,
+                         params_out['surf_loc'], params_out['surf_std'])
+
+            turbid_model_z = turb_intens * np.exp(decay_param * surf_col_z)
+
+            model_diff = surf_pk_model_z - turbid_model_z
+
+            # first sign change is the intersection we want
+            sign_ = np.sign(model_diff)
+            # ie where sign changes (from negative to positive only)
+            sign_changes_i = np.where((sign_[:-1] != sign_[1:]))[0] + 1
+
+            if (len(sign_changes_i) == 0) or \
+                    ((surf_col_z[sign_changes_i[0]] - params_out['surf_loc']) > (10 * params_out['surf_std'])):
+
+                # either no crossing between the two models,
+                # or that crossing is way off, and should be ignored
+                params_out['trans_mult'] = 10
+                params_out['decay_param'] = -zero_val
+
+            else:
+                transition_z_new = surf_col_z[sign_changes_i[0]]
+                transition_mult_new = (
+                    transition_z_new - params_out['surf_loc']) / params_out['surf_std']
+
+                # hooray! we have somewhat accurately estimated turbidity
+                params_out['trans_mult'] = transition_mult_new
+                params_out['decay_param'] = decay_param
+
+    ##############################    REFINING BATHY PEAK     ################################
+    # now that we have a more solid estimate of the base of the bathy peak (turbidity/decay)
+    # lets improve our estimate of the bathy model, if there is one
+
+    # if theres a bathy peak
+    if bathy_pk_df.shape[0] > 0:
+
+        # if theres turbidity modeled remove that base from consideration
+        valid_turb = (params_out['trans_mult'] != 10) & (
+            params_out['decay_param'] != -zero_val)
+
+        if valid_turb:
+            turb_intens_new = turbid_model_z[sign_changes_i[0]]
+            bathy_base = turb_intens_new * \
+                np.exp(decay_param * depth[bathy_range_i])
+
+        else:
+            bathy_base = np.zeros_like(depth[bathy_range_i])
+
+        bathy_hist_prom = hist[bathy_range_i] - bathy_base
+
+        # isolate the histogram values and fit
+
+        # check that the bathy peak is well defined enough to try a fit process
+        # requires more than 1 non zero bin
+        # maybe other requirements im missing
+        p_init_b = [bathy_pk.prom_scaling,
+                    bathy_pk.depth, bathy_pk.sigma_est]
+        [_bathy_prom_scale, _bathy_loc, _bathy_sigma] = p_init_b
+        try:
+            [_bathy_prom_scale, _bathy_loc, _bathy_sigma], _ = curve_fit(f=gauss,
+                                                                         xdata=depth[bathy_range_i],
+                                                                         ydata=bathy_hist_prom,
+                                                                         p0=p_init_b,
+                                                                         bounds=([zero_val, params_out['surf_loc'], zero_val],
+                                                                                 [3*_surf_mag_scale, depth.max(), np.inf]))
+
+        except:
+            # curve fit can fail under a lot of common cases like 1 bin peaks etc
+            # just catch them all instead of accounting for each for now
+            [_bathy_prom_scale, _bathy_loc, _bathy_sigma] = p_init_b
+
+        params_out['bathy_loc'] = _bathy_loc
+        params_out['bathy_std'] = _bathy_sigma
+        params_out['bathy_prom'] = _bathy_prom_scale / \
+            np.sqrt(2 * np.pi * _bathy_sigma**2)
+
+    ############################ CONFIDENCE OF BATHY PEAK ############################
+    # One way we can measure the confidence of our bathy peak is how it compares
+    # to the variations about the rest of the subsurface model
+    # eg check if the peak is on the order of the rest of the subsurface variations
+
+    # careful, using all subsurface data might skew things when we really just care
+    # about the region with valid data
+
+    # actually trying something a little simpler
+    # quality_flag = 2 : only 1 isolated subsurface peak
+    # quality_flag = 3 : multiple subsurface peaks -> check bathy_conf
+
+    # bathy_conf = ratio of bathy peak prominence to next most prominent peak
+    # still undefined if only 1 bathy peak - do something else for these
+
+    # if theres a bathy peak
+    if bathy_pk_df.shape[0] > 1:
+        # trying a more naive approach
+        # consider any peaks further than 1m in either direction
+            # to help prevent cases of spread bathy signal falling in separate bins
+
+        non_bathy_pks = bathy_pk_df.iloc[1:]
+        comparison_peaks = non_bathy_pks.loc[np.abs(non_bathy_pks.depth - bathy_pk.depth) > 1, :]
+
+        if comparison_peaks.shape[0] == 0:
+            # no subsurface peaks 1m+ away from probably bathy peak
+            quality_flag = 2 # good surface, effectively 1 bathy
+            bathy_quality_ratio = -1
+
+        else:
+           quality_flag = 3 # good surface, multiple bathy, check quality ratio
+           bathy_quality_ratio = bathy_pk.prominences / comparison_peaks.prominences.iloc[0]
+
+    elif bathy_pk_df.shape[0] == 1:
+        quality_flag = 2 # good surface, 1 bathy
+        bathy_quality_ratio = -1 # do something here
+
+    else:
+        # recall if the surface peak is badly defined we wouldnt get to this point
+        quality_flag = 1 # good surface, no bathy
+        bathy_quality_ratio = -1
+
+    # old approach for smoothed subsurface noise check
+    # # get subsurface model residuals
+    # # only up to deepest bin with data, though, so empty window doesnt skew results
+    # test_index = np.full((len(hist),), False)
+    # # initialize
+    # test_index[transition_i:(np.argwhere(hist > 0).flatten()[-1])] = True
+    # # use subsurf
+    # # test_index[bathy_range_i] = False
+    # # remove bathy peak section
+    # test_index = np.argwhere(test_index).flatten()
+    # # reindex to integers
+
+    # # require test section to have at least a few valid bins
+    # if len(test_index) < 3:
+    #     bathy_quality_ratio = -1
+
+    # else:
+    #     # estimate subsurface error
+    #     # subsurface_model = histogram_model(depth_bins=depth[test_index], **params_out)
+    #     # use smoothed data instead
+
+    #     subsurface_fitted = gaussian_filter1d(
+    #         hist[test_index], 1/z_bin_approx)
+
+    #     residuals = subsurface_fitted - hist[test_index]
+
+    #     mae = np.mean(np.abs(residuals))
+
+    #     bathy_quality_ratio = params_out['bathy_prom'] / mae
 
     bounds = pd.DataFrame([lower_bound, upper_bound],
                           index=['lower', 'upper']).T
 
-    return params_out, bounds, quality_flag
+    return params_out, bounds, quality_flag, bathy_quality_ratio
 
 
 class Waveform:
@@ -867,7 +1190,8 @@ class Waveform:
 
     """
 
-    def __init__(self, histogram, depth_bin_edges, fit=False, verbose=False):
+    def __init__(self, histogram, depth_bin_edges,
+                 fit=False, sat_check=False, verbose=False):
 
         # ensure that histogram and bin edges make sense
         assert len(histogram) == (len(depth_bin_edges) - 1)
@@ -890,8 +1214,101 @@ class Waveform:
         # get peak data about this waveform
         self.peaks = get_peak_info(self.data, self.depth, verbose=verbose)
 
+        # ################ Afterpulsing check / removal #################
+
+        # code can be simplified better but I am on a deadline and tired
+        # note that each known AP is only allowed to be removed once
+
+        # initialize dataframe of afterpulse peaks
+        self.sat_peaks = pd.DataFrame(0, index=[], columns=self.peaks.columns)
+
+        # save the original hist in case you need to modify it (AP, etc)
+        self.data_original = histogram
+
+        # initial sat flag (# of saturated peaks)
+        self.sat_flag = 0
+
+        # if peaks identified and contains saturation flagged photons
+        if sat_check and (self.peaks.shape[0] > 0):
+
+            main_peak = self.peaks.iloc[0]
+            bathy_pk_df = self.peaks.loc[self.peaks.depth > main_peak.depth]
+
+            # # any peaks matching saturation parameters get skipped and saved for later analysis (turbidity)
+            sat_idx = []
+            icheck_in = []  # list of afterpulses already been removed
+            data_no_ap = self.data.copy()
+            # only checking top 6 non-surface peaks (or however many fewer than that)
+            for i in range(0, min(bathy_pk_df.shape[0], 11)):
+                # test peak
+                pkt = bathy_pk_df.iloc[i]
+                check, icheck = is_peak_ap(pkt.heights, pkt.depth,
+                                           main_peak.heights, main_peak.depth)
+                # print(check, pkt.heights, pkt.depth, main_peak.heights, main_peak.depth)
+                if check and (icheck not in icheck_in):
+                    # remove peak from histogram
+                    left_i = np.int64(
+                        np.floor(pkt.i - 2.5 * pkt.sigma_est_left_i))
+                    right_i = np.int64(
+                        np.ceil(pkt.i + 2.5 * pkt.sigma_est_right_i))
+                    data_no_ap[left_i:right_i+1] = np.nan
+
+                    # save peak info
+                    sat_idx.append(pkt.name)
+                    icheck_in.append(icheck)
+
+            # interpolate across nan values where sat peaks used to be
+            data_no_ap = pd.Series(data_no_ap).interpolate(
+                method='linear').values
+
+            # one more pass for checking peaks
+            # helpful in case an afterpulsing peak is missed due to the
+            # peak distance requirement in the peak finder,
+            # but leftover as a clear afterpulse
+
+            peaks2 = get_peak_info(data_no_ap, self.depth, verbose=verbose)
+            main_peak2 = peaks2.iloc[0]
+            bathy_pk_df2 = peaks2.loc[peaks2.depth > main_peak2.depth]
+
+            sat_idx2 = []
+            data_no_ap2 = data_no_ap.copy()
+            for i in range(0, min(bathy_pk_df2.shape[0], 11)):
+                pkt = bathy_pk_df2.iloc[i]
+                check, icheck = is_peak_ap(pkt.heights, pkt.depth,
+                                           main_peak2.heights, main_peak2.depth)
+                # print(check, pkt.heights, pkt.depth, main_peak.heights, main_peak.depth)
+                if check and (icheck not in icheck_in):
+                    # remove peak from histogram
+                    left_i = np.int64(
+                        np.floor(pkt.i - 2.5 * pkt.sigma_est_left_i))
+                    right_i = np.int64(
+                        np.ceil(pkt.i + 2.5 * pkt.sigma_est_right_i))
+                    data_no_ap2[left_i:right_i+1] = np.nan
+
+                    # save peak info
+                    sat_idx2.append(pkt.name)
+
+            # interpolate across nan values where sat peaks used to be
+            data_no_ap2 = pd.Series(data_no_ap2).interpolate(
+                method='linear').values
+
+            # combine lists of saturation peaks
+            sat_comb = pd.concat(
+                [bathy_pk_df.loc[sat_idx, :], bathy_pk_df2.loc[sat_idx2, :]], ignore_index=True, axis=0)
+            self.sat_peaks = sat_comb
+
+            # sat flag is proportional to the number of peaks that match sat conditions
+            self.sat_flag = sat_comb.shape[0]
+
+            # save off original data and update histogram/peaks
+            self.data = data_no_ap2
+
+            self.peaks = peaks2.drop(sat_idx2)
+
+        ###########################################################
+
         # get hist model parameters, fitting bounds, and qualitative quality flag
-        params_est, self.bounds, self.quality_flag = estimate_model_params(
+        params_est, self.bounds, self.quality_flag, self.bathy_quality_ratio = estimate_model_params(
             self.data, self.depth, self.peaks, verbose=verbose)
 
         params_est = pd.Series(params_est, name='initial')
@@ -943,12 +1360,12 @@ class Waveform:
         self.model_interp.turbidity = turbidity(
             self.model_interp.depth, **self.params.initial)
 
-        if fit==True:
+        if fit == True:
             _ = self.fit()
 
         # placeholder for the segments of profile data
         self.profile = None
-        self.sat_ph_any = None
+        self.sat_check = sat_check
 
     def __str__(self):
         '''Human readable summary'''
@@ -957,7 +1374,8 @@ TOTAL PHOTONS: {np.sum(self.data)}
 Depth Range : [{min(self.bin_edges):.2f}m, {max(self.bin_edges):.2f}m]
 Depth Bin Count : {len(self.bin_edges) - 1}
 Peak Count : {self.peaks.shape[0]}
-Parameter Quality Flag : {self.quality_flag}
+Overall Quality Flag : {self.quality_flag}
+Bathymetry Confidence : {self.bathy_quality_ratio}
 Fitted? : {self.fitted}
 
 Initial Parameter Estimates:
@@ -971,10 +1389,6 @@ Initial Parameter Estimates:
         # deconvolves the atlas response at whatever the depth resolution is
         pass
 
-    def set_sat_ph_any(self, flag):
-        'true if there are any quality_ph flagged photons in this window'
-        self.sat_ph_any = flag
-
     def fit(self, xtol=1e-6, ftol=1e-6):
         """Attempts to fit the initially estimated histogram model to the original data. Returns dict of new model parameters, but also saves fitted model data to Waveform.params, Wavefrom.model, and Waveform.model_interp attributes for further analysis.
 
@@ -985,6 +1399,10 @@ Initial Parameter Estimates:
         Returns:
             dict: Dictionary of refined model parameters
         """
+        if self.quality_flag <= 0:
+            # bad window or error setting quality flag, dont fit
+            return
+
         params_fit, _ = curve_fit(histogram_model,
                                   self.model_interp.depth,
                                   self.model_interp.input,
@@ -1014,7 +1432,7 @@ Initial Parameter Estimates:
         self.fitted = True
 
         # evaluate error and store result
-        # to do
+        # not done yet
 
         return params_fit
 
@@ -1059,22 +1477,29 @@ Initial Parameter Estimates:
             ax2.plot(self.model.output_f, self.model.depth, marker='s', linestyle='-',
                      color='darkorange', linewidth=2, alpha=0.75, label='Fitted Histogram Model')
 
-            ax2.legend()
+            ax2.legend(loc='lower right')
             ax2.grid('major')
             # ax2.invert_yaxis()
             # ax2.set_ylabel('Depth (m)')
             ax2.set_xlabel('Photons (count)')
             ax2.set_title('Fitted Model')
 
+            if logplot:
+                ax2.set_xscale('log')
+                ax2.set_xlim([1e-1, ax2.get_xlim()[1]])
+
         # plotting model components (interpolated for clarity)
         ax1.plot(self.model_interp.noise + self.model_interp.surface + self.model_interp.turbidity +
                  self.model_interp.bathy, self.model_interp.depth, 'b.', label='Seafloor')
 
-        ax1.plot(self.model_interp.noise + self.model_interp.surface,
-                 self.model_interp.depth, 'r.', label='Surface')
+        surface_mask = self.model_interp.surface > 0
+        ax1.plot(self.model_interp.noise[surface_mask] + self.model_interp.surface[surface_mask],
+                 self.model_interp.depth[surface_mask], 'r.', label='Surface')
 
-        ax1.plot(self.model_interp.noise + self.model_interp.turbidity,
-                 self.model_interp.depth, 'g.', label='Turbidity')
+        turbidity_mask = self.model_interp.turbidity > 0
+
+        ax1.plot(self.model_interp.noise[turbidity_mask] + self.model_interp.turbidity[turbidity_mask],
+                 self.model_interp.depth[turbidity_mask], 'g.', label='Turbidity')
 
         ax1.plot(self.model_interp.noise,
                  self.model_interp.depth, marker='.', linestyle='', color='grey', label='Noise')
@@ -1084,16 +1509,16 @@ Initial Parameter Estimates:
         ax1.plot(self.model.input[self.model.input > 0], self.model.depth[self.model.input > 0],
                  'kx-', linewidth=2, label='Input Histogram')
 
-        ax1.plot(self.model.output[self.model.output > 0], self.model.depth[self.model.output > 0], marker='s', linestyle='-',
-                 color='darkorange', linewidth=2, alpha=0.75, label='Model Estimate')
+        ax1.plot(self.model.output[self.model.output > 0], self.model.depth[self.model.output > 0], marker='.', linestyle='-',
+                 color='darkorange', linewidth=1, alpha=0.9, label='Model Estimate')
 
-        ax1.legend()
+        ax1.legend(loc='lower right')
         ax1.grid('major')
         ax1.invert_yaxis()
-        
-        ax1.set_ylabel('Depth (m)')
+
+        ax1.set_ylabel('(-) Elevation EGM08 (m)')
         ax1.set_xlabel('Photons (count)')
-        ax1.set_title('Initial Model')
+        ax1.set_title('Model Estimate')
 
         if logplot:
             ax1.set_xscale('log')
@@ -1109,16 +1534,64 @@ Initial Parameter Estimates:
 
 if __name__ == "__main__":
     import numpy as np
+    import pandas as pd
+    from icesat2 import Profile
+    import os
+    from geo_aoi import GeoAOI
 
-    # increasing in depth, decreasing in elevation
-    hist = np.array([1, 2, 10, 25, 8, 5, 5, 4, 8, 2, 2, 1])
+    # Demo Sample Waveform
+    # # increasing in depth, decreasing in elevation
+    # hist = np.array([1, 2, 10, 25, 8, 5, 5, 4, 8, 6, 5, 4, 4, 2, 1])
+    # # depth bins must be increasing L-R
+    # depth_bin_edges = np.linspace(-5, 15, len(hist)+1)
+    # w = Waveform(hist, depth_bin_edges)
+    # print(w)
+    # w.fit()
+    # # w.show()
 
-    # depth bins must be increasing L-R
-    depth_bin_edges = np.linspace(-5, 15, len(hist)+1)
+    # sample aoi from GBR
+    aoi = GeoAOI.from_points(
+        x=[149.4, 149.6, 149.6, 149.4], 
+        y=[-19.8, -19.8, -19.797, -19.797])
 
-    w = Waveform(hist, depth_bin_edges)
-    print(w)
-    w.fit()
-    # w.show()
+    p = Profile.load_sample(aoi=aoi)
+
+    # sample aoi for NC
+    # aoi = GeoAOI.from_points(
+    #     x=[-76.7, -74.2, -74.2, -76.7], y=[34.4, 34.4, 34.55, 34.55])
+
+    # base = '/Users/jonathan/Documents/Research/PAPER_Density_Heuristic_IS2_Bathy/nc_is2_2019'
+    # f = 'ATL03_20191206003613_10710502_005_01.h5'
+    # p = Profile.from_h5(os.path.join(base, f), 'gt1l', aoi=aoi)
+
+    # organizing data as if it were a chunk of photons histogrammed
+    df = p.data
+
+    # test range of photons
+    # df = p.data.loc[(p.data.lat > 35.43) & (p.data.lat < 35.5), :]
+    # df = p.data.loc[(p.data.lat > -19.8) & (p.data.lat < -19.795), :]
+
+    # pseudowaveform of data
+    zres = 0.1
+    bounds = [-10, 50]
+    z_bin_edges = np.linspace(bounds[0], bounds[1], np.int64(
+        np.abs(bounds[1] - bounds[0])/zres)+1)
+    hist, _ = np.histogram(-(df.height - df.geoid_z), z_bin_edges)
+    depths = z_bin_edges[:-1] + zres
+
+    # # interpolating zero bin values
+    # idx = np.where(hist != 0)
+    # hist_new = np.interp(depths, depths[idx], hist[idx])
+    # dont like this assumption, reverting back
+    hist_new = hist
+
+    w = Waveform(hist_new, z_bin_edges)
+    w.add_profile(p)
+    # only run these if there are any sat photons in chunk
+
+    test_peak_mag = w.params.initial.bathy_prom  # should use magnitude instead
+    test_peak_loc = w.params.initial.bathy_loc
+    surf_peak_mag = w.params.initial.surf_prom
+    surf_peak_loc = w.params.initial.surf_loc
 
     print('')
