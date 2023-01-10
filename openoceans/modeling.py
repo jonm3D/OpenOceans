@@ -311,7 +311,7 @@ class Model:
         _ = self.label_photons() 
 
         # compute smoothed surface
-        x_smoothed, z_smoothed = self._smooth_surface(self.profile.data, smoothing_aggression=0.025, surface_class=41)
+        x_smoothed, z_smoothed = self._smooth_surface(self.profile.data, smoothing_aggression=0.01, surface_class=41)
 
         # add smoothed surface model to model object
         self.surface_smoothed = z_smoothed
@@ -320,11 +320,11 @@ class Model:
         
         # use waviness to determine likely ocean
         spectral_water_flag = self.compute_spectral_ocean_flag(x_smoothed, z_smoothed, 
-        along_track_sight_distance, spectral_similarity_threshold=0.95, flatness_threshold=None)
+        along_track_sight_distance, spectral_similarity_threshold=0.98, flatness_threshold=None)
         
         # use flatness to determine likely ocean
         flat_surface_flag = self.compute_flat_surface_flag(x_smoothed, z_smoothed, 
-            along_track_sight_distance, flatness_deg_threshold = 2)
+            along_track_sight_distance=100, flatness_deg_threshold=2)
 
 
         # compile surface metrics and store
@@ -333,7 +333,7 @@ class Model:
         self.surface_data = pd.DataFrame(data_rows,
             index=data_names).T
 
-    def compute_flat_surface_flag(self, x_along_track, y_surface, along_track_sight_distance, flatness_deg_threshold = 2):
+    def compute_flat_surface_flag(self, x_along_track, y_surface, along_track_sight_distance=100, flatness_deg_threshold=2):
       # compute the flatness and spectral similarity for each point along track
         
         # sort by along track distance
@@ -362,26 +362,45 @@ class Model:
 
             photons_behind = (x_along_track > at_range_behind[0]) \
                 & (x_along_track < at_range_behind[1])
-
-            # inverse trig from basic triangle
-            opposite_side_ahead = np.abs(np.mean(y_surface[photons_ahead]) - i_y)
-            opposite_side_behind = np.abs(np.mean(y_surface[photons_behind]) - i_y)
+            
+            # we'll construct a basic trig angle set up
             adjacent_side = along_track_sight_distance
 
-            # compute the angle
-            angle_ahead = np.arctan(opposite_side_ahead / adjacent_side)
-            angle_behind = np.arctan(opposite_side_behind / adjacent_side)
+            # look ahead of you
+            if photons_ahead.shape[0] > 50:
+                opposite_side_ahead = np.abs(np.mean(y_surface[photons_ahead]) - i_y)
+                angle_ahead = np.abs(np.arctan2(opposite_side_ahead / adjacent_side))
+                angle_ahead_deg = np.rad2deg(angle_ahead)
+            
+            else:
+                # not enough data to compute - probably an edge
+                angle_ahead = 999
+                angle_ahead_deg = 999
 
-            # convert to degrees
-            angle_ahead_deg = np.rad2deg(angle_ahead)
-            angle_behind_deg = np.rad2deg(angle_behind)
+            # look behind you
+            if photons_behind.shape[0] > 50:
+                opposite_side_behind = np.abs(np.mean(y_surface[photons_behind]) - i_y)
+                angle_behind = np.abs(np.arctan2(opposite_side_behind / adjacent_side))
+                angle_behind_deg = np.rad2deg(angle_behind)
+
+            else:
+                # not enough data to compute - probably an edge
+                angle_behind = 999
+                angle_behind_deg = 999            
+            
 
             # get score
             # 0 neither ahead or behind is flat
             # 1 one surface is flat
             # 2 both surfaces are flat
+            score = 0
 
-            score = np.sum([angle_ahead_deg < flatness_deg_threshold, angle_behind_deg < flatness_deg_threshold])
+            # just being explicit for clarity
+            if angle_ahead_deg < flatness_deg_threshold:
+                score = score + 1
+
+            if angle_behind_deg < flatness_deg_threshold:
+                score = score + 1
 
             flat_surface_confidence[i] = score
 
@@ -404,13 +423,19 @@ class Model:
         not_yet_classified = np.ones_like(x_along_track)
         
 
-        for i in range(len(y_surface)):
-        # while np.any(not_yet_checked &  not_yet_classified):
+        # for i in range(len(y_surface)): # standard loop through surface photons
 
-            # i = np.where(np.logical_and(not_yet_checked, not_yet_classified))[0]
+        # loop through only unprocessed/classified photons
+        # assignes classes in groups where possible to speed up compute
+
+        while np.any(np.logical_and(not_yet_checked, not_yet_classified)):
+            i = np.where(np.logical_and(not_yet_checked, not_yet_classified))[0][0]
+
+            # get this surface models along track and elevation value
             i_x = x_along_track[i]
             i_y = y_surface[i]
-            not_yet_checked[i] = 0
+            
+            not_yet_checked[i] = 0 # update to do list
             
             # (center bin, look ahead distance)
             at_range_ahead = (i_x, i_x + along_track_sight_distance)
@@ -428,32 +453,33 @@ class Model:
             # make these surface the same length of data, whichever is shorter
             trim_length = min(np.sum(photons_ahead), np.sum(photons_behind))
 
-            # compute spectra
             if trim_length < 50:
                 # require 50 photons, else skip
-                # totally arbitrary just as a debugging sanity check
+                # totally arbitrary just a debugging sanity check
                 continue
 
+            # isolate same length surface signal chunks
             signal_ahead = y_surface[photons_ahead][:trim_length]
             signal_behind = y_surface[photons_behind][-trim_length:]
 
+            # compute spectra of smoothed surface model
             spectra_ahead = np.fft.fft(signal_ahead)
             spectra_behind = np.fft.fft(signal_behind)
 
-            # compare spectra
+            # compare spectra - ocean waves more likely to have consistent frequencies
             spectral_similarity_score = cosine_similarity(spectra_ahead, spectra_behind)
 
-            # compare similirity to threshold
+            # compare similarity to threshold
             likely_ocean_by_spectra = spectral_similarity_score > spectral_similarity_threshold
 
-            # if deemed likely ocean, raise flag for all photons in the window
+            # if deemed likely ocean, raise flag for all photons in the window to reduce compute
             if likely_ocean_by_spectra:
-                # this_photon_is_over_water[photons_ahead] = 1
-                # this_photon_is_over_water[photons_behind] = 1
+                this_photon_is_over_water[photons_ahead] = 1
+                this_photon_is_over_water[photons_behind] = 1
 
                 this_photon_is_over_water[i] = 1
 
-                not_yet_classified[photons_ahead] = 0
+                not_yet_classified[photons_ahead] = 0 # update to do list
                 not_yet_classified[photons_behind] = 0
 
             # if not deemed likely ocean, move on to next photon
