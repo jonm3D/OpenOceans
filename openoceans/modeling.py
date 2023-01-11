@@ -315,8 +315,12 @@ class Model:
         self.surface_data = self.process_surface_data(along_track_sight_distance_flat=1000,
                                                       both_window_threshold=0.25,
                                                       one_window_threshold=0.5,
-                                                      along_track_sight_distance_spectra=1000, # betting this does better lower
+                                                      along_track_sight_distance_spectra=1000,  # betting this does better lower
                                                       spectral_similarity_threshold=0.95)  # processed surface data
+
+    # def process_turbidity_data(self):
+
+    #     return turbidity_data
 
     def process_surface_data(self, along_track_sight_distance_flat=2000,
                              both_window_threshold=0.25,
@@ -488,14 +492,14 @@ class Model:
         not_yet_classified = np.ones_like(x_along_track)
         spectral_similarity_score = -np.ones_like(x_along_track)
 
-        for i in range(len(z_surface)): # standard loop through surface photons
+        for i in range(len(z_surface)):  # standard loop through surface photons
 
-        # loop through only unprocessed/classified photons
-        # assignes classes in groups where possible to speed up compute
+            # loop through only unprocessed/classified photons
+            # assignes classes in groups where possible to speed up compute
 
-        # while np.any(np.logical_and(not_yet_checked, not_yet_classified)):
-        #     i = np.where(np.logical_and(
-        #         not_yet_checked, not_yet_classified))[0][0]
+            # while np.any(np.logical_and(not_yet_checked, not_yet_classified)):
+            #     i = np.where(np.logical_and(
+            #         not_yet_checked, not_yet_classified))[0][0]
 
             # get this surface models along track and elevation value
             i_x = x_along_track[i]
@@ -588,29 +592,23 @@ class Model:
 
     def _compute_turbidity_score(self):
 
-        turbidity_score = 0
+        # if window and step size are both 1, dont throw an error
+        if (self.window_size != 1) or (self.step_along_track != 1):
+            raise ValueError('Turbidity score can only be computed for window size and step size of 1. This should be fixed at some point, but its not immediately clear how or why to handle this score for overlapping window cases.')
 
-        for i in self.waves.keys():
+        # index via wave keys or something else?
+        n = len(self.waves.keys())
+        turbidity_score = np.zeros((n, ))
 
-            # integral of turbidity model
+        for i in range(n):
 
-            turbidity_score = np.sum(self.waves[i].model.turbidity)
+            # sum of turbidity component
+            # turbidity_score[i] = np.sum(self.waves[i].model.turbidity)
+
+            # would need to be made into a true integral to be consistent regardless of bin resolution
+            turbidity_score[i] = np.trapz(self.waves[i].model.turbidity)
 
         return turbidity_score
-
-    def _organize_wave_dict(self):
-        # convert dict of waveforms to somethign more usable
-        # has index to go back and reference individual waveforms
-
-        # index
-        # mean/median lat, lon, along track dist
-        # model params
-        # fitted model params
-        # quality flag
-        # has saturated photons or not
-        # number of photons included
-
-        pass
 
     def _compute_histogram(self):
 
@@ -729,11 +727,12 @@ class Model:
 
     def report(self, ModelMakerInit):
 
-        along_track_delta = self.params.at_med
+        along_track_delta = self.params.at_med - self.profile.data.dist_ph_along.min()
 
         f, ax = plt.subplots(5, 1, figsize=(8, 11), sharex=True)
 
-        ax[0].plot(self.profile.data.dist_ph_along, self.profile.data.height - self.profile.data.geoid_z,
+        ax[0].plot(self.profile.data.dist_ph_along - self.profile.data.dist_ph_along.min(),
+                 self.profile.data.height - self.profile.data.geoid_z,
                    'k.', alpha=0.4, markersize=0.25, label='Photon Data')
         ax[0].set_ylim(-self.params.bathy_loc.max() - 2, 20)
         ax[0].plot(along_track_delta, -self.params.surf_loc,
@@ -741,6 +740,8 @@ class Model:
         ax[0].legend()
         ax[0].grid()
         ax[0].set_ylabel('EGM08 Elevation (m)')
+        ax[0].set_ylim([min(-self.params.surf_loc) - 5,
+                       max(-self.params.surf_loc) + 10])
 
         ax[1].plot(along_track_delta, self.params.surf_std, 'r')
         ax[1].set_title('Surface Deviation')
@@ -759,7 +760,7 @@ class Model:
         ax[3].fill_between(along_track_delta, 0.0, 0.25, color='r', alpha=0.2)
 
         ax[3].set_ylim([-0.1, 1.1])
-        ax[3].set_title('Bathymetry Confidence Ratio (Zones Subjective)')
+        ax[3].set_title('Bathymetry Confidence TBD')
         # ax[3].grid()
 
         ax[4].plot(along_track_delta, self.params.turb_score, 'k')
