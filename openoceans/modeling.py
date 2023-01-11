@@ -12,13 +12,7 @@ import scipy.stats as stats
 from scipy.signal import savgol_filter
 
 # to do
-# - convert waveforms to usable model dataframes - DONE
 # - add refraction corrections
-
-# decide on a better quality flag and or filter
-
-# note
-# added gaussian filtering to the model histogram in the plot and in the processing
 
 
 def round_if_integer(x, n=2):
@@ -299,7 +293,6 @@ class Model:
         self.waves = waves
         self.profile = profile
         self.fitted = fitted
-        self.surface = None  # photon resolution smoothed surface model
 
         # slightly different than the model resolution
         # depending on step size, window
@@ -316,8 +309,22 @@ class Model:
         self.profile.data['classification'] = self.label_by_pseudowaveform()
 
         # will probably want a second classification array for post filtering results later
+        # do that here
 
-        ##### cut here
+        # PROCESSING SURFACE MODEL / OCEAN FLAGGING / MORE
+        self.surface_data = self.process_surface_data(along_track_sight_distance_flat=1000,
+                                                      both_window_threshold=0.25,
+                                                      one_window_threshold=0.5,
+                                                      along_track_sight_distance_spectra=1000, # betting this does better lower
+                                                      spectral_similarity_threshold=0.95)  # processed surface data
+
+    def process_surface_data(self, along_track_sight_distance_flat=2000,
+                             both_window_threshold=0.25,
+                             one_window_threshold=0.5,
+                             along_track_sight_distance_spectra=1000,
+                             spectral_similarity_threshold=0.95):
+
+        # main function that corrals all the surface modeling functions
 
         # compute smoothed surface
         x_smoothed, z_smoothed = self._smooth_surface(
@@ -326,29 +333,42 @@ class Model:
         # start constructing surface object and add to object
         # specific flags get added to this structure
         data_rows = [x_smoothed, z_smoothed]
-        data_names = ['dist_ph_along', 'z',]
-        self.surface_data = pd.DataFrame(data_rows,
-                                         index=data_names).T
+        data_names = ['dist_ph_along', 'z', ]
+        surface_data = pd.DataFrame(data_rows,
+                                    index=data_names).T
 
         # remove duplicate along track points and get median elevations for these
         # easier now that we have a dataframe whoo boy i love dataframes
-        self.surface_data = self.surface_data.groupby('dist_ph_along').median().reset_index()
+        surface_data = surface_data.groupby(
+            'dist_ph_along').median().reset_index()
 
-        flatness_score, rel_elev_data = self._compute_flatness_score(along_track_sight_distance=2000)
-        self.surface_data['flatness_score'] = flatness_score
-        self.surface_data = pd.concat([self.surface_data, rel_elev_data], axis=1)
+        flatness_score, rel_elev_data = self._compute_flatness_score(
+            surface_data.dist_ph_along.values,
+            surface_data.z.values,
+            along_track_sight_distance_flat,
+            both_window_threshold,
+            one_window_threshold)
+
+        surface_data['flatness_score'] = flatness_score
+        surface_data = pd.concat([surface_data, rel_elev_data], axis=1)
 
         # append flatness score and relative elevation
+
         # use waviness to determine likely ocean
-        # needs updating 
 
-        along_track_sight_distance_spectra = 1000  # meters
-        spectral_water_flag = self.compute_spectral_ocean_flag(x_smoothed, z_smoothed,
-                                                               along_track_sight_distance_spectra,
-                                                               spectral_similarity_threshold=0.98,
-                                                               flatness_threshold=None)
+        similar_spectra_flag, spectral_similarity_score = self._compute_spectral_ocean_flag(
+            surface_data.dist_ph_along.values,
+            surface_data.z.values,
+            along_track_sight_distance_spectra,
+            spectral_similarity_threshold)
 
-    def _compute_flatness_score(self, along_track_sight_distance=2000, both_window_threshold = 0.25, one_window_threshold = 0.5):
+        surface_data['similar_spectra_flag'] = similar_spectra_flag
+
+        surface_data['spectral_similarity_score'] = spectral_similarity_score
+
+        return surface_data
+
+    def _compute_flatness_score(self, surface_along_track, surface_z, along_track_sight_distance=2000, both_window_threshold=0.25, one_window_threshold=0.5):
         # both window threshold means how far apart are the average surface values on either side of you
         # one window threshold means how far is the average of each side from the photon at the center of the window
 
@@ -366,31 +386,27 @@ class Model:
         # and the observation points elevation
         # first val of looking ahead and last value of looking behind are NAN!
 
-        # at the resolution of photons classified surface by pwaveform model
-        surface_along_track = self.surface_data.dist_ph_along.values
+        looking_ahead_relelev = self._diff_from_nearby_average(surface_along_track, surface_z,
+                                                               along_track_direction='ahead',
+                                                               along_track_sight_distance=along_track_sight_distance)
 
-        surface_z = self.surface_data.z.values
-
-        looking_ahead_relelev = self._diff_from_nearby_average(surface_along_track, surface_z, 
-            along_track_direction='ahead', 
-            along_track_sight_distance=along_track_sight_distance)
-
-        looking_behind_relelev = self._diff_from_nearby_average(surface_along_track, surface_z, 
-            along_track_direction='behind', 
-            along_track_sight_distance=along_track_sight_distance)
+        looking_behind_relelev = self._diff_from_nearby_average(surface_along_track, surface_z,
+                                                                along_track_direction='behind',
+                                                                along_track_sight_distance=along_track_sight_distance)
 
         # combine the two
-        rel_elev_data = pd.DataFrame([looking_ahead_relelev, looking_behind_relelev], 
-                                    index=['looking_ahead', 'looking_behind']).T
+        rel_elev_data = pd.DataFrame([looking_ahead_relelev, looking_behind_relelev],
+                                     index=['looking_ahead', 'looking_behind']).T
 
         # require that both the surfaces on either side be relatively close to eachother
         # i.e. \./ or _._
-        flat_condition_1 = np.abs(looking_ahead_relelev - looking_behind_relelev) < both_window_threshold
+        flat_condition_1 = np.abs(
+            looking_ahead_relelev - looking_behind_relelev) < both_window_threshold
 
         # ensure that neither surface on either side changes elevation very much
         # m threshold to limit \./ false positive detection
         flat_condition_2 = (np.abs(looking_ahead_relelev) < one_window_threshold) \
-                & (np.abs(looking_behind_relelev) < one_window_threshold)
+            & (np.abs(looking_behind_relelev) < one_window_threshold)
 
         # WHY THIS WORKS
         # the first condition really only works because with either sides surface elevation averaged,
@@ -402,7 +418,8 @@ class Model:
         # anywhere both these conditions are met is high conf flat surface
         flat_surface_bool = np.logical_and(flat_condition_1, flat_condition_2)
 
-        flat_surface_score = flat_surface_bool.astype(np.int64) * 2 # label these with class 2 - high conf
+        flat_surface_score = flat_surface_bool.astype(
+            np.int64) * 2  # label these with class 2 - high conf
 
         # buffer size is automatically determined by the look ahead distance
 
@@ -418,13 +435,15 @@ class Model:
             # collect all nearby photons
             left_edge = i_x - along_track_sight_distance
             right_edge = i_x + along_track_sight_distance
-            photons_in_window = (surface_along_track > left_edge) & (surface_along_track < right_edge)
+            photons_in_window = (surface_along_track > left_edge) & (
+                surface_along_track < right_edge)
 
             # but only photons that werent already classified as surface
-            unclass_photons_in_window = photons_in_window & (flat_surface_bool == False)
+            unclass_photons_in_window = photons_in_window & (
+                flat_surface_bool == False)
 
             # give these photons a flat surface score of 1
-            flat_surface_score[unclass_photons_in_window] = 1 
+            flat_surface_score[unclass_photons_in_window] = 1
 
         return flat_surface_score, rel_elev_data
 
@@ -435,17 +454,10 @@ class Model:
         # require along track direction string is 'ahead' or 'behind'
         assert along_track_direction in ['ahead', 'behind']
 
-        # sort by along track distance if not already
-        # assumes input data is basically already in the direction of the along track distance
-        reindex = np.argsort(x_along_track.flatten())
-        x_along_track = x_along_track[reindex]
-        y_surface = y_surface[reindex]
-
         # storage array
         diff_from_nearby_average = np.zeros_like(x_along_track)
 
         for i in range(len(y_surface)):
-
             i_x = x_along_track[i]
             i_y = y_surface[i]
 
@@ -459,37 +471,34 @@ class Model:
             photons_in_window = (x_along_track > at_range[0]) \
                 & (x_along_track < at_range[1])
 
-            diff_from_nearby_average[i] = np.mean(y_surface[photons_in_window] - i_y)
+            diff_from_nearby_average[i] = np.mean(
+                y_surface[photons_in_window] - i_y)
 
         return diff_from_nearby_average
 
-    def compute_spectral_ocean_flag(self, x_along_track, y_surface, along_track_sight_distance, spectral_similarity_threshold=0.95, flatness_threshold=None):
+    def _compute_spectral_ocean_flag(self, x_along_track, z_surface, along_track_sight_distance=2000, spectral_similarity_threshold=0.95):
 
         # compute the flatness and spectral similarity for each point along track
-
-        # sort by along track distance
-        # assumes input data is basically already in the direction of the along track distance
-        reindex = np.argsort(x_along_track.flatten())
-        x_along_track = x_along_track[reindex]
-        y_surface = y_surface[reindex]
+        # x_along_track = self.surface_data.dist_ph_along.values
+        # z_surface = self.surface_data.z.values
 
         # storage array
         this_photon_is_over_water = np.zeros_like(x_along_track)
         not_yet_checked = np.ones_like(x_along_track)
         not_yet_classified = np.ones_like(x_along_track)
+        spectral_similarity_score = -np.ones_like(x_along_track)
 
-        # for i in range(len(y_surface)): # standard loop through surface photons
+        for i in range(len(z_surface)): # standard loop through surface photons
 
         # loop through only unprocessed/classified photons
         # assignes classes in groups where possible to speed up compute
 
-        while np.any(np.logical_and(not_yet_checked, not_yet_classified)):
-            i = np.where(np.logical_and(
-                not_yet_checked, not_yet_classified))[0][0]
+        # while np.any(np.logical_and(not_yet_checked, not_yet_classified)):
+        #     i = np.where(np.logical_and(
+        #         not_yet_checked, not_yet_classified))[0][0]
 
             # get this surface models along track and elevation value
             i_x = x_along_track[i]
-            i_y = y_surface[i]
 
             not_yet_checked[i] = 0  # update to do list
 
@@ -515,19 +524,19 @@ class Model:
                 continue
 
             # isolate same length surface signal chunks
-            signal_ahead = y_surface[photons_ahead][:trim_length]
-            signal_behind = y_surface[photons_behind][-trim_length:]
+            signal_ahead = z_surface[photons_ahead][:trim_length]
+            signal_behind = z_surface[photons_behind][-trim_length:]
 
             # compute spectra of smoothed surface model
             spectra_ahead = np.fft.fft(signal_ahead)
             spectra_behind = np.fft.fft(signal_behind)
 
             # compare spectra - ocean waves more likely to have consistent frequencies
-            spectral_similarity_score = cosine_similarity(
+            spectral_similarity_score[i] = cosine_similarity(
                 spectra_ahead, spectra_behind)
 
             # compare similarity to threshold
-            likely_ocean_by_spectra = spectral_similarity_score > spectral_similarity_threshold
+            likely_ocean_by_spectra = spectral_similarity_score[i] > spectral_similarity_threshold
 
             # if deemed likely ocean, raise flag for all photons in the window to reduce compute
             if likely_ocean_by_spectra:
@@ -540,7 +549,7 @@ class Model:
                 not_yet_classified[photons_behind] = 0
 
             # if not deemed likely ocean, move on to next photon
-            # recall photons are presumed land to start, requires positive verification
+            # recall photons are presumed land to start, requires positive verification to switch to ocean
 
             # move next unclassified, not-yet-analyzed photon
             # should be a significant computational savings over the pure loop
@@ -549,17 +558,17 @@ class Model:
 
             # add buffer to spectral similarity score
 
-        return this_photon_is_over_water.astype(bool)
+        return this_photon_is_over_water.astype(bool), spectral_similarity_score
 
     def _smooth_surface(self, profile_data, smoothing_aggression=0.025, surface_class=41):
 
         # get surface classified photons
         surface_data = profile_data.loc[profile_data.classification == surface_class]
-        
+
         # sort by along track distance
-        surface_data = surface_data.sort_values('dist_ph_along') 
+        surface_data = surface_data.sort_values('dist_ph_along')
         z = surface_data.height - surface_data.geoid_z
-        x_along_track = surface_data.dist_ph_along.values    
+        x_along_track = surface_data.dist_ph_along.values
 
         # smoothing with savitsky golay
         # window size set by number of photons
@@ -853,7 +862,7 @@ class Model:
         ax.set_title('Land Classification')
 
         return f, ax
-    
+
     def label_by_pseudowaveform(self):
 
         # set up array of labels using original photon indices
@@ -918,8 +927,6 @@ class Model:
             labels.loc[idx_in_this_bin[i_column_idx]] = 45  # LAS specification
             labels.loc[idx_in_this_bin[i_bathy_idx]] = 40  # LAS specification
             labels.loc[idx_in_this_bin[i_noise_idx]] = 2
-
-            
 
         return labels  # also output them for convenience
 
