@@ -19,19 +19,22 @@ from scipy.signal import savgol_filter
 
 # note
 # added gaussian filtering to the model histogram in the plot and in the processing
+
+
 def round_if_integer(x, n=2):
     if round(x, n) == x:
         return np.int64(x)
     return x
 
+
 def cosine_similarity(x, y):
     """
     Compute the cosine similarity between two signals.
-    
+
     Parameters:
     x (1D array): First signal.
     y (1D array): Second signal.
-    
+
     Returns:
     float: Cosine similarity between x and y.
     """
@@ -39,11 +42,13 @@ def cosine_similarity(x, y):
     dot = np.dot(x, y)
     x_mag = np.linalg.norm(x)
     y_mag = np.linalg.norm(y)
-    
+
     # Compute and return cosine similarity
     return np.real(dot / (x_mag * y_mag))
 
 # use a ttest to check if a set of values are meaningfully different from zero
+
+
 def effectively_zero(values):
 
     if len(values) < 2:
@@ -53,6 +58,7 @@ def effectively_zero(values):
     t, p = stats.ttest_1samp(values, 0)
 
     return p > 0.05
+
 
 class ModelMaker:
 
@@ -111,14 +117,14 @@ class ModelMaker:
         return model_id
 
     def process(self, profile):
-        
+
         z_min = self.range_z[0]
         z_max = self.range_z[1]
         z_bin_count = np.int64(np.ceil((z_max - z_min) / self.res_z))
 
         # if signal has been identified, only use those photons
-        if profile.signal_finding==True:
-            data = profile.data.loc[profile.data.signal==True, :]
+        if profile.signal_finding == True:
+            data = profile.data.loc[profile.data.signal == True, :]
 
         else:
             data = profile.data
@@ -185,7 +191,7 @@ class ModelMaker:
 
             # subset of histogram data in the evaluation window
             h_ = histogram1d(height_geoid,
-                            range=[z_min, z_max], bins=z_bin_count)
+                             range=[z_min, z_max], bins=z_bin_count)
 
             # smooth the histogram with 0.2 sigma gaussian kernel
             h = gaussian_filter1d(h_, 0.2/self.res_z)
@@ -293,7 +299,7 @@ class Model:
         self.waves = waves
         self.profile = profile
         self.fitted = fitted
-        self.surface = None # photon resolution smoothed surface model
+        self.surface = None  # photon resolution smoothed surface model
 
         # slightly different than the model resolution
         # depending on step size, window
@@ -306,111 +312,161 @@ class Model:
         turbidity_score = self._compute_turbidity_score()
         self.params.loc[:, 'turb_score'] = turbidity_score
 
-        # compute labels for photon data
-        # updates m.profile.data.classifications under the hood
-        _ = self.label_photons() 
+        # compute labels for photon data and update m.profile.data.classifications
+        self.profile.data['classification'] = self.label_by_pseudowaveform()
+
+        # will probably want a second classification array for post filtering results later
+
+        ##### cut here
 
         # compute smoothed surface
-        x_smoothed, z_smoothed = self._smooth_surface(self.profile.data, smoothing_aggression=0.01, surface_class=41)
+        x_smoothed, z_smoothed = self._smooth_surface(
+            self.profile.data, smoothing_aggression=0.01, surface_class=41)
 
-        # add smoothed surface model to model object
-        self.surface_smoothed = z_smoothed
-
-        along_track_sight_distance = 1000 # meters
-        
-        # use waviness to determine likely ocean
-        spectral_water_flag = self.compute_spectral_ocean_flag(x_smoothed, z_smoothed, 
-        along_track_sight_distance, spectral_similarity_threshold=0.98, flatness_threshold=None)
-        
-        # use flatness to determine likely ocean
-        flat_surface_flag = self.compute_flat_surface_flag(x_smoothed, z_smoothed, 
-            along_track_sight_distance=100, flatness_deg_threshold=2)
-
-
-        # compile surface metrics and store
-        data_rows = [x_smoothed, z_smoothed, spectral_water_flag, flat_surface_flag]
-        data_names = ['dist_ph_along', 'z', 'spectral_similiarity_flag', 'flat_surface_flag']
+        # start constructing surface object and add to object
+        # specific flags get added to this structure
+        data_rows = [x_smoothed, z_smoothed]
+        data_names = ['dist_ph_along', 'z',]
         self.surface_data = pd.DataFrame(data_rows,
-            index=data_names).T
+                                         index=data_names).T
 
-    def compute_flat_surface_flag(self, x_along_track, y_surface, along_track_sight_distance=100, flatness_deg_threshold=2):
+        # remove duplicate along track points and get median elevations for these
+        # easier now that we have a dataframe whoo boy i love dataframes
+        self.surface_data = self.surface_data.groupby('dist_ph_along').median().reset_index()
+
+        flatness_score, rel_elev_data = self._compute_flatness_score(along_track_sight_distance=2000)
+        self.surface_data['flatness_score'] = flatness_score
+        self.surface_data = pd.concat([self.surface_data, rel_elev_data], axis=1)
+
+        # append flatness score and relative elevation
+        # use waviness to determine likely ocean
+        # needs updating 
+
+        along_track_sight_distance_spectra = 1000  # meters
+        spectral_water_flag = self.compute_spectral_ocean_flag(x_smoothed, z_smoothed,
+                                                               along_track_sight_distance_spectra,
+                                                               spectral_similarity_threshold=0.98,
+                                                               flatness_threshold=None)
+
+    def _compute_flatness_score(self, along_track_sight_distance=2000, both_window_threshold = 0.25, one_window_threshold = 0.5):
+        # both window threshold means how far apart are the average surface values on either side of you
+        # one window threshold means how far is the average of each side from the photon at the center of the window
+
+        # this is sloowwwwwwwwwww...
+
+        # FLAT SURFACE SCORE
+        # 0 = not flat
+        # 1 = flat
+        # 2 = buffer / coastal zone
+
+        # RELATIVE ELEVATION DATA
+        # rows are observations of surface model points
+        # columns are 'looking_ahead' and 'looking_behind'
+        # values are the difference between the average surface elevation of the points ahead or behind the observation point
+        # and the observation points elevation
+        # first val of looking ahead and last value of looking behind are NAN!
+
+        # at the resolution of photons classified surface by pwaveform model
+        surface_along_track = self.surface_data.dist_ph_along.values
+
+        surface_z = self.surface_data.z.values
+
+        looking_ahead_relelev = self._diff_from_nearby_average(surface_along_track, surface_z, 
+            along_track_direction='ahead', 
+            along_track_sight_distance=along_track_sight_distance)
+
+        looking_behind_relelev = self._diff_from_nearby_average(surface_along_track, surface_z, 
+            along_track_direction='behind', 
+            along_track_sight_distance=along_track_sight_distance)
+
+        # combine the two
+        rel_elev_data = pd.DataFrame([looking_ahead_relelev, looking_behind_relelev], 
+                                    index=['looking_ahead', 'looking_behind']).T
+
+        # require that both the surfaces on either side be relatively close to eachother
+        # i.e. \./ or _._
+        flat_condition_1 = np.abs(looking_ahead_relelev - looking_behind_relelev) < both_window_threshold
+
+        # ensure that neither surface on either side changes elevation very much
+        # m threshold to limit \./ false positive detection
+        flat_condition_2 = (np.abs(looking_ahead_relelev) < one_window_threshold) \
+                & (np.abs(looking_behind_relelev) < one_window_threshold)
+
+        # WHY THIS WORKS
+        # the first condition really only works because with either sides surface elevation averaged,
+        # then the wave motion is captured by the center photon, and the surface elevation changes symmetrically
+        # this makes most sense if you plot the mean relative height of the window on either side along track
+        # then the second condition just helps filter out chance occurances over land
+        # buffer still needs to be applied to this method
+
+        # anywhere both these conditions are met is high conf flat surface
+        flat_surface_bool = np.logical_and(flat_condition_1, flat_condition_2)
+
+        flat_surface_score = flat_surface_bool.astype(np.int64) * 2 # label these with class 2 - high conf
+
+        # buffer size is automatically determined by the look ahead distance
+
+        # get indices where flat_surface_bool changes values
+        buffer_idx = np.where(np.diff(flat_surface_bool))[0]
+
+        for i_buff in range(len(buffer_idx)):
+            # get info about this point along track
+            i = buffer_idx[i_buff]
+            i_x = surface_along_track[i]
+            i_z = surface_z[i]
+
+            # collect all nearby photons
+            left_edge = i_x - along_track_sight_distance
+            right_edge = i_x + along_track_sight_distance
+            photons_in_window = (surface_along_track > left_edge) & (surface_along_track < right_edge)
+
+            # but only photons that werent already classified as surface
+            unclass_photons_in_window = photons_in_window & (flat_surface_bool == False)
+
+            # give these photons a flat surface score of 1
+            flat_surface_score[unclass_photons_in_window] = 1 
+
+        return flat_surface_score, rel_elev_data
+
+    def _diff_from_nearby_average(self, x_along_track, y_surface, along_track_direction, along_track_sight_distance=100):
+        # require x_along_track and y_surface to just be 1d numpy arrays
+
       # compute the flatness and spectral similarity for each point along track
-        
-        # sort by along track distance
+        # require along track direction string is 'ahead' or 'behind'
+        assert along_track_direction in ['ahead', 'behind']
+
+        # sort by along track distance if not already
         # assumes input data is basically already in the direction of the along track distance
         reindex = np.argsort(x_along_track.flatten())
         x_along_track = x_along_track[reindex]
         y_surface = y_surface[reindex]
 
         # storage array
-        flat_surface_confidence = np.zeros_like(x_along_track)
-        
+        diff_from_nearby_average = np.zeros_like(x_along_track)
+
         for i in range(len(y_surface)):
 
             i_x = x_along_track[i]
             i_y = y_surface[i]
-            
-            # (center bin, look ahead distance)
-            at_range_ahead = (i_x, i_x + along_track_sight_distance)
 
-            # (center bin, look behind distance)
-            at_range_behind = (i_x - along_track_sight_distance, i_x)
+            # (center bin, look ahead/behind distance)
+            if along_track_direction == 'ahead':
+                at_range = (i_x, i_x + along_track_sight_distance)
+            elif along_track_direction == 'behind':
+                at_range = (i_x - along_track_sight_distance, i_x)
 
             # get all photons ahead/behind you
-            photons_ahead = (x_along_track > at_range_ahead[0]) \
-                & (x_along_track < at_range_ahead[1])
+            photons_in_window = (x_along_track > at_range[0]) \
+                & (x_along_track < at_range[1])
 
-            photons_behind = (x_along_track > at_range_behind[0]) \
-                & (x_along_track < at_range_behind[1])
-            
-            # we'll construct a basic trig angle set up
-            adjacent_side = along_track_sight_distance
+            diff_from_nearby_average[i] = np.mean(y_surface[photons_in_window] - i_y)
 
-            # look ahead of you
-            if photons_ahead.shape[0] > 50:
-                opposite_side_ahead = np.abs(np.mean(y_surface[photons_ahead]) - i_y)
-                angle_ahead = np.abs(np.arctan2(opposite_side_ahead / adjacent_side))
-                angle_ahead_deg = np.rad2deg(angle_ahead)
-            
-            else:
-                # not enough data to compute - probably an edge
-                angle_ahead = 999
-                angle_ahead_deg = 999
-
-            # look behind you
-            if photons_behind.shape[0] > 50:
-                opposite_side_behind = np.abs(np.mean(y_surface[photons_behind]) - i_y)
-                angle_behind = np.abs(np.arctan2(opposite_side_behind / adjacent_side))
-                angle_behind_deg = np.rad2deg(angle_behind)
-
-            else:
-                # not enough data to compute - probably an edge
-                angle_behind = 999
-                angle_behind_deg = 999            
-            
-
-            # get score
-            # 0 neither ahead or behind is flat
-            # 1 one surface is flat
-            # 2 both surfaces are flat
-            score = 0
-
-            # just being explicit for clarity
-            if angle_ahead_deg < flatness_deg_threshold:
-                score = score + 1
-
-            if angle_behind_deg < flatness_deg_threshold:
-                score = score + 1
-
-            flat_surface_confidence[i] = score
-
-        return flat_surface_confidence
-
+        return diff_from_nearby_average
 
     def compute_spectral_ocean_flag(self, x_along_track, y_surface, along_track_sight_distance, spectral_similarity_threshold=0.95, flatness_threshold=None):
 
         # compute the flatness and spectral similarity for each point along track
-        
+
         # sort by along track distance
         # assumes input data is basically already in the direction of the along track distance
         reindex = np.argsort(x_along_track.flatten())
@@ -421,7 +477,6 @@ class Model:
         this_photon_is_over_water = np.zeros_like(x_along_track)
         not_yet_checked = np.ones_like(x_along_track)
         not_yet_classified = np.ones_like(x_along_track)
-        
 
         # for i in range(len(y_surface)): # standard loop through surface photons
 
@@ -429,14 +484,15 @@ class Model:
         # assignes classes in groups where possible to speed up compute
 
         while np.any(np.logical_and(not_yet_checked, not_yet_classified)):
-            i = np.where(np.logical_and(not_yet_checked, not_yet_classified))[0][0]
+            i = np.where(np.logical_and(
+                not_yet_checked, not_yet_classified))[0][0]
 
             # get this surface models along track and elevation value
             i_x = x_along_track[i]
             i_y = y_surface[i]
-            
-            not_yet_checked[i] = 0 # update to do list
-            
+
+            not_yet_checked[i] = 0  # update to do list
+
             # (center bin, look ahead distance)
             at_range_ahead = (i_x, i_x + along_track_sight_distance)
 
@@ -467,7 +523,8 @@ class Model:
             spectra_behind = np.fft.fft(signal_behind)
 
             # compare spectra - ocean waves more likely to have consistent frequencies
-            spectral_similarity_score = cosine_similarity(spectra_ahead, spectra_behind)
+            spectral_similarity_score = cosine_similarity(
+                spectra_ahead, spectra_behind)
 
             # compare similarity to threshold
             likely_ocean_by_spectra = spectral_similarity_score > spectral_similarity_threshold
@@ -479,32 +536,30 @@ class Model:
 
                 this_photon_is_over_water[i] = 1
 
-                not_yet_classified[photons_ahead] = 0 # update to do list
+                not_yet_classified[photons_ahead] = 0  # update to do list
                 not_yet_classified[photons_behind] = 0
 
             # if not deemed likely ocean, move on to next photon
-            # recall photons are presumed land to start, requires positive verification 
+            # recall photons are presumed land to start, requires positive verification
 
             # move next unclassified, not-yet-analyzed photon
             # should be a significant computational savings over the pure loop
 
+            # save spectral similarity
 
-
-
-            # save spectral similarity 
-            
-            
-            # add buffer to spectral similarity score           
+            # add buffer to spectral similarity score
 
         return this_photon_is_over_water.astype(bool)
 
-    
     def _smooth_surface(self, profile_data, smoothing_aggression=0.025, surface_class=41):
 
         # get surface classified photons
         surface_data = profile_data.loc[profile_data.classification == surface_class]
-        surface_data = surface_data.sort_values('dist_ph_along')
+        
+        # sort by along track distance
+        surface_data = surface_data.sort_values('dist_ph_along') 
         z = surface_data.height - surface_data.geoid_z
+        x_along_track = surface_data.dist_ph_along.values    
 
         # smoothing with savitsky golay
         # window size set by number of photons
@@ -514,17 +569,16 @@ class Model:
 
         z_smooth = savgol_filter(z, window_length, poly_order)
 
-        return surface_data.dist_ph_along.values, z_smooth
+        return x_along_track, z_smooth
 
     def __str__(self):
 
         # print out useful info about this model like params, the ranges of the z , AT values, win, step size, num waveforms
 
-        
         pass
 
     def _compute_turbidity_score(self):
-    
+
         turbidity_score = 0
 
         for i in self.waves.keys():
@@ -566,10 +620,10 @@ class Model:
 
         # compute fast histogram over large photon data
         h_ = histogram2d(xh, yh,
-                        range=[[at_min, at_max], [
-                            z_min, z_max]],
-                        bins=[at_bin_count, z_bin_count])
-                        
+                         range=[[at_min, at_max], [
+                             z_min, z_max]],
+                         bins=[at_bin_count, z_bin_count])
+
         g_sigma = 0.2 / np.diff(self.bin_edges_z)[0]
 
         h = gaussian_filter1d(h_, g_sigma, axis=1)
@@ -592,7 +646,7 @@ class Model:
 
         return hist_interp
 
-    def show(self, interp=True):    
+    def show(self, interp=True):
 
         # will show the fitted model if it has been calculated
 
@@ -626,17 +680,21 @@ class Model:
         im1 = ax[1].pcolormesh(x_axis_values, self.bin_edges_z,
                                histm.T, norm=pltnorm, cmap=cmap)
         # get cmap from this image
-        
+
         ax[1].set_title(
             'modeled data')
         ax[1].set_ylabel('Elevation (m)')
         ax[1].set_xlabel('Along Track Step Index')
-        
+
         # Descriptive title for the model based on model parameters for uniqueness
-        at_res = np.diff(self.bin_edges_at)[0] # assume constant along track resolution
-        z_res = np.diff(self.bin_edges_z)[0] # assume constant vertical bin resolution
-        z_range = (round_if_integer(np.min(self.bin_edges_z)), round_if_integer(np.max(self.bin_edges_z)))
-        ax[1].set_title(f'AT_res={round_if_integer(at_res)}m, Z_res={z_res}m, Z_range=({z_range[0]}, {z_range[1]})m, WIN={self.window_size}, STEP={self.step_along_track}')
+        # assume constant along track resolution
+        at_res = np.diff(self.bin_edges_at)[0]
+        # assume constant vertical bin resolution
+        z_res = np.diff(self.bin_edges_z)[0]
+        z_range = (round_if_integer(np.min(self.bin_edges_z)),
+                   round_if_integer(np.max(self.bin_edges_z)))
+        ax[1].set_title(
+            f'AT_res={round_if_integer(at_res)}m, Z_res={z_res}m, Z_range=({z_range[0]}, {z_range[1]})m, WIN={self.window_size}, STEP={self.step_along_track}')
 
         # main title
         f.suptitle('Pseudowaveform-based Model')
@@ -645,7 +703,8 @@ class Model:
         bottom, top = 0.1, 0.9
         left, right = 0.1, 0.8
 
-        f.subplots_adjust(top=top, bottom=bottom, left=left, right=right, hspace=0.15, wspace=0.25)
+        f.subplots_adjust(top=top, bottom=bottom, left=left,
+                          right=right, hspace=0.15, wspace=0.25)
 
         # colorbar
         cbar_ax = f.add_axes([0.85, bottom, 0.05, top-bottom])
@@ -666,9 +725,10 @@ class Model:
         f, ax = plt.subplots(5, 1, figsize=(8, 11), sharex=True)
 
         ax[0].plot(self.profile.data.dist_ph_along, self.profile.data.height - self.profile.data.geoid_z,
-                    'k.', alpha=0.4, markersize=0.25, label='Photon Data')
+                   'k.', alpha=0.4, markersize=0.25, label='Photon Data')
         ax[0].set_ylim(-self.params.bathy_loc.max() - 2, 20)
-        ax[0].plot(along_track_delta, -self.params.surf_loc, 'b', label='Estimated Surface (m)')
+        ax[0].plot(along_track_delta, -self.params.surf_loc,
+                   'b', label='Estimated Surface (m)')
         ax[0].legend()
         ax[0].grid()
         ax[0].set_ylabel('EGM08 Elevation (m)')
@@ -683,7 +743,8 @@ class Model:
         ax[2].set_title('Surface Prominence')
         ax[2].grid()
 
-        ax[3].plot(along_track_delta, self.params.bathy_prom / self.params.surf_prom, 'm', label='Bathy/Surface Prominence')
+        ax[3].plot(along_track_delta, self.params.bathy_prom /
+                   self.params.surf_prom, 'm', label='Bathy/Surface Prominence')
         ax[3].fill_between(along_track_delta, 0.5, 1.1, color='g', alpha=0.2)
         ax[3].fill_between(along_track_delta, 0.25, 0.5, color='y', alpha=0.2)
         ax[3].fill_between(along_track_delta, 0.0, 0.25, color='r', alpha=0.2)
@@ -698,7 +759,8 @@ class Model:
         ax[4].grid()
         ax[4].set_xlabel('Along Track Delta (m)')
 
-        f.suptitle(ModelMakerInit.get_formatted_filename() + ' - ' + self.profile.get_formatted_filename().upper())
+        f.suptitle(ModelMakerInit.get_formatted_filename() +
+                   ' - ' + self.profile.get_formatted_filename().upper())
         f.tight_layout()
 
         return f, ax
@@ -737,9 +799,9 @@ class Model:
             relative_surface_heights_left = params_L.surf_loc - params_i.surf_loc
             relative_surface_heights_right = params_R.surf_loc - params_i.surf_loc
 
-            # check if data on either given side is 'flat' 
+            # check if data on either given side is 'flat'
             if effectively_zero(relative_surface_heights_left) \
-                or effectively_zero(relative_surface_heights_right):
+                    or effectively_zero(relative_surface_heights_right):
 
                 # likely_land[i_along_track] = False # already false
                 pass
@@ -754,7 +816,7 @@ class Model:
 
             # if params_i.surf_std > 5.0:
             #     self.params.loc[i_along_track, 'likely_land'] = True
-        
+
         self.likely_land = likely_land
 
         return likely_land
@@ -770,7 +832,7 @@ class Model:
 
         # plot land as green background shading, water as blue shading
 
-        for i in np.arange( len( self.bin_edges_at ) - 1 ) + 1: 
+        for i in np.arange(len(self.bin_edges_at) - 1) + 1:
 
             # shift index by 1 to get correct bin edges
 
@@ -780,9 +842,9 @@ class Model:
 
             else:
                 ax.fill_betweenx(z, x[i-1], x[i], color='b', alpha=0.2)
-            
-                # ax.axvspan(self.params.loc[i, 'at_med'] - self.params.loc[i, 'at_std'], 
-                #             self.params.loc[i, 'at_med'] + self.params.loc[i, 'at_std'], 
+
+                # ax.axvspan(self.params.loc[i, 'at_med'] - self.params.loc[i, 'at_std'],
+                #             self.params.loc[i, 'at_med'] + self.params.loc[i, 'at_std'],
                 #             color='b', alpha=0.2)
 
         ax.plot(self.params.at_med, self.params.likely_land, 'k.')
@@ -791,13 +853,12 @@ class Model:
         ax.set_title('Land Classification')
 
         return f, ax
-
-    def label_photons(self):
+    
+    def label_by_pseudowaveform(self):
 
         # set up array of labels using original photon indices
-        labels = pd.DataFrame(-np.ones((self.profile.data.shape[0],), dtype=int), 
-                            index=self.profile.data.index)
-
+        labels = pd.DataFrame(-np.ones((self.profile.data.shape[0],), dtype=int),
+                              index=self.profile.data.index)
 
         for i_along_track in self.waves.keys():
 
@@ -828,34 +889,40 @@ class Model:
             # index photons in this wave bin and classify them by height
 
             # above surface
-            i_background_idx = (i_wave.profile.data.height-i_wave.profile.data.geoid_z) > thresh_surf_top
+            i_background_idx = (i_wave.profile.data.height -
+                                i_wave.profile.data.geoid_z) > thresh_surf_top
 
             # in surface return
             i_surface_idx = ((i_wave.profile.data.height-i_wave.profile.data.geoid_z) <= thresh_surf_top) & \
-                            ((i_wave.profile.data.height-i_wave.profile.data.geoid_z) > thresh_column_top)  
+                            ((i_wave.profile.data.height -
+                             i_wave.profile.data.geoid_z) > thresh_column_top)
 
             # in water column
             i_column_idx = ((i_wave.profile.data.height-i_wave.profile.data.geoid_z) <= thresh_column_top) & \
-                            ((i_wave.profile.data.height-i_wave.profile.data.geoid_z) > thresh_bathy_top) 
+                ((i_wave.profile.data.height-i_wave.profile.data.geoid_z)
+                 > thresh_bathy_top)
 
             # in bathy return
             i_bathy_idx = ((i_wave.profile.data.height-i_wave.profile.data.geoid_z) <= thresh_bathy_top) & \
-                            ((i_wave.profile.data.height-i_wave.profile.data.geoid_z) > thresh_bathy_bottom)
-            
+                ((i_wave.profile.data.height-i_wave.profile.data.geoid_z)
+                 > thresh_bathy_bottom)
+
             # below any bathy return
-            i_noise_idx = (i_wave.profile.data.height-i_wave.profile.data.geoid_z) < thresh_bathy_bottom
+            i_noise_idx = (i_wave.profile.data.height -
+                           i_wave.profile.data.geoid_z) < thresh_bathy_bottom
 
             # assign labels to photons
             labels.loc[idx_in_this_bin[i_background_idx]] = 1
-            labels.loc[idx_in_this_bin[i_surface_idx]] = 41 # LAS specification
-            labels.loc[idx_in_this_bin[i_column_idx]] = 45 # LAS specification
-            labels.loc[idx_in_this_bin[i_bathy_idx]] = 40 # LAS specification
+            # LAS specification
+            labels.loc[idx_in_this_bin[i_surface_idx]] = 41
+            labels.loc[idx_in_this_bin[i_column_idx]] = 45  # LAS specification
+            labels.loc[idx_in_this_bin[i_bathy_idx]] = 40  # LAS specification
             labels.loc[idx_in_this_bin[i_noise_idx]] = 2
 
-            # add the labels to the profile data
-            self.profile.data['classification'] = labels
             
-        return labels # also output them for convenience
+
+        return labels  # also output them for convenience
+
 
 if __name__ == "__main__":
     from waveform import Waveform
@@ -879,6 +946,7 @@ if __name__ == "__main__":
 
     plt.figure()
     thr = 10
-    okidx = m.params.bathy_conf>thr
-    plt.plot(p.data.lat, p.data.height-p.data.geoid_z, 'k.', markersize=0.5, alpha=.8)
+    okidx = m.params.bathy_conf > thr
+    plt.plot(p.data.lat, p.data.height-p.data.geoid_z,
+             'k.', markersize=0.5, alpha=.8)
     plt.plot(m.params.y_med[okidx], -m.params.bathy_loc[okidx], 'r.')
