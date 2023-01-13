@@ -15,6 +15,7 @@ import os
 import matplotlib.pyplot as plt
 import hdbscan
 import seaborn as sns
+import json
 
 from bokeh.plotting import figure
 from bokeh.io import show, output_notebook
@@ -24,6 +25,7 @@ tile_provider = get_provider('ESRI_IMAGERY')
 
 # IMPORT FUNCTION DOESNT KNOW HOW TO DISTINGUISH BETWEEN PRERELEASE AND RELEASE DATA
 # saving images / filenames doesnt account for section number from ATL03 name
+
 
 def beam_info(gtxx, sc_orient):
 
@@ -121,14 +123,14 @@ class Profile:
         # if aoi is provided, clip photon data
         if aoi is not None:
             data = self._clip_to_aoi(data, aoi)
-        
+
         self.aoi = aoi
 
         # details about the track (date, gtxx, rgt, cycle)
         self.info = info
 
         # photon resolution satellite data
-        # add land classifications 
+        # add land classifications
 
         if aoi is not None:
             shoreline_bbox = aoi.poly.bounds
@@ -137,7 +139,8 @@ class Profile:
 
         try:
 
-            land_point_labels = self._find_land_points(data, bbox=shoreline_bbox)
+            land_point_labels = self._find_land_points(
+                data, bbox=shoreline_bbox)
 
             data.loc[:, 'is_land'] = land_point_labels
 
@@ -151,7 +154,7 @@ class Profile:
 
         self.signal_finding = False
         # have a property for height datum and/or x,y crs?
-        
+
     def __str__(self):
         '''Human-readable description.'''
         desc = f"""
@@ -202,7 +205,6 @@ Photons Returned: {self.data.shape[0]}
             ProgressBar = progressbar.ProgressBar(max_value=7)
         else:
             ProgressBar = progressbar.NullBar(max_value=7)
-
 
         with ProgressBar as bar:
             with h5py.File(filepath, 'r') as f:
@@ -276,7 +278,8 @@ Photons Returned: {self.data.shape[0]}
 
                 # check on ATL03 behavior
                 if np.array(f['/ancillary_data/start_region'])[0] != np.array(f['/ancillary_data/end_region'])[0]:
-                    warnings.warn('Start/end region numbers differ - figure out why and handle this behavior.')
+                    warnings.warn(
+                        'Start/end region numbers differ - figure out why and handle this behavior.')
 
                 # replace() fixes whitespace at end of string
                 anc['release'] = np.array(
@@ -300,7 +303,7 @@ Photons Returned: {self.data.shape[0]}
                     f['/orbit_info/cycle_number'])[0]
 
                 pho['region'] = np.int64(
-                    anc['region'] * np.ones(len(lat_ph))) 
+                    anc['region'] * np.ones(len(lat_ph)))
 
                 pho['cycle'] = np.int64(
                     anc['cycle_number'] * np.ones(len(lat_ph)))
@@ -479,8 +482,9 @@ Photons Returned: {self.data.shape[0]}
                                    'gtxx': gtxx,
                                    'cycle': anc['cycle_number'],
                                    'region': anc['region'],
-                                   'orbit_dir':anc['orbit_dir'],
-                                   'release': anc['release']}
+                                   'orbit_dir': anc['orbit_dir'],
+                                   'release': anc['release'],
+                                   'path': os.path.abspath(filepath)}
 
                 beam_info_dict = beam_info(gtxx, anc['sc_orient'])
 
@@ -514,10 +518,11 @@ Photons Returned: {self.data.shape[0]}
         # relative path to atl03 sample data
         try:
 
-            filepath = os.path.join('sample_data', 'gbr_reef_ATL03_20210817155409_08401208_005_01.h5')
+            filepath = os.path.join(
+                'sample_data', 'gbr_reef_ATL03_20210817155409_08401208_005_01.h5')
 
             absolute_filepath = os.path.abspath(filepath)
-            
+
             sample_profile = cls.from_h5(absolute_filepath, 'gt2r', aoi=aoi)
 
             return sample_profile
@@ -559,6 +564,18 @@ Photons Returned: {self.data.shape[0]}
         sampling_residuals = np.diff(dist_ph_along.iloc[i_sample]) - meters
 
         return i_sample, sampling_residuals
+
+    # this is the quick and easy interface for the user
+    def along_track_subsample(self, meters=1000):
+
+        # directly subsample the photon data at the closest points to some rate
+        # might be weird depending on the data
+        # returns the residuals for your own validation step
+
+        i_sample, residuals = self._along_track_subsample(
+            self.data.dist_ph_along, meters=meters)
+
+        return self.data.iloc[i_sample]
 
     @staticmethod
     def _convert_seg_to_ph_res(segment_res_data,
@@ -698,7 +715,7 @@ Photons Returned: {self.data.shape[0]}
 
         z = self.data.height - self.data.geoid_z
 
-        plt.plot(x,z,'k.', markersize=1, alpha=0.6, label='All Photons')
+        plt.plot(x, z, 'k.', markersize=1, alpha=0.6, label='All Photons')
 
         # plotting specific classes
 
@@ -710,17 +727,17 @@ Photons Returned: {self.data.shape[0]}
         else:
             labels = self.data.classification
 
-            surf_idx = labels==41
-            bathy_idx = labels==40
-            column_idx = labels==45 
+            surf_idx = labels == 41
+            bathy_idx = labels == 40
+            column_idx = labels == 45
 
             # plot classes
-            plt.plot(x[surf_idx], z[surf_idx], 'r.', \
-                markersize=1, alpha=0.75, label='Surface (41)')
-            plt.plot(x[bathy_idx], z[bathy_idx], 'bo', \
-                markersize=1, alpha=0.75, label='Bathymetry (41)')
-            plt.plot(x[column_idx], z[column_idx], 'g.', \
-                markersize=1, alpha=0.75, label='Column (45)')
+            plt.plot(x[surf_idx], z[surf_idx], 'r.',
+                     markersize=1, alpha=0.75, label='Surface (41)')
+            plt.plot(x[bathy_idx], z[bathy_idx], 'bo',
+                     markersize=1, alpha=0.75, label='Bathymetry (41)')
+            plt.plot(x[column_idx], z[column_idx], 'g.',
+                     markersize=1, alpha=0.75, label='Column (45)')
 
         # tidying up
         plt.xlabel(xlabel)
@@ -733,7 +750,7 @@ Photons Returned: {self.data.shape[0]}
         return plt.gcf(), plt.gca()
 
     def find_signal(self, min_cluster_size=10, min_samples=1, cluster_selection_epsilon=0.75,
-                  along_track_scaling=33., in_place=False, show_plot=False):
+                    along_track_scaling=33., in_place=False, show_plot=False):
         """Using HDBSCAN algorithm to determine signal. Note that we are not employing HDBSCAN for the segmentation of subsurface/surface clusters, only for the detection of clustered data. Any photons detected as part of a cluster are labeled signal.
 
         For more information, see https://hdbscan.readthedocs.io/en/latest/
@@ -821,7 +838,7 @@ Photons Returned: {self.data.shape[0]}
 
         # assuming use of geoaois usage for bbox is geoaoi.poly.bounds
 
-        ######## # For Natural earth data implementation as of 1/6/2023
+        # For Natural earth data implementation as of 1/6/2023
         # requires that the input gdf has ranged index values i
         # will need to change if index is changed to time or something
         # this currently checks point in polygon for EVERY point
@@ -834,11 +851,14 @@ Photons Returned: {self.data.shape[0]}
             this_file = os.path.abspath(__file__)
 
             # navigating relative imports - I think theres probably a better way than this
-            current_dir = os.path.dirname(__file__)  # Get the directory where the current file is stored
-            parent_dir = os.path.dirname(current_dir)  # Get the parent directory of the current directory
+            # Get the directory where the current file is stored
+            current_dir = os.path.dirname(__file__)
+            # Get the parent directory of the current directory
+            parent_dir = os.path.dirname(current_dir)
             parent_dir_path = os.path.abspath(parent_dir)
 
-            shoreline_data_path = os.path.join(parent_dir_path, 'shorelines', 'ne_10m_land', 'ne_10m_land.shp')
+            shoreline_data_path = os.path.join(
+                parent_dir_path, 'shorelines', 'ne_10m_land', 'ne_10m_land.shp')
             land_polygon_gdf = gpd.read_file(shoreline_data_path, bbox=bbox)
 
             # continue with getting a new array of 0-or-1 labels for each photon
@@ -846,22 +866,22 @@ Photons Returned: {self.data.shape[0]}
 
             # update labels for points in the land polygons
             pts_in = gpd.sjoin(gdf, land_polygon_gdf, predicate='within')
-            land_loc = gdf.index.isin(pts_in.index) # bool
+            land_loc = gdf.index.isin(pts_in.index)  # bool
 
             new_labels[land_loc] = 1
             new_labels[~land_loc] = 0
 
             return new_labels
 
-        except Exception as e: 
-            
+        except Exception as e:
+
             print(e)
 
             print("Error loading shoreline data, returning -1s for is_land flag")
 
             # if the shoreline data is not available
             # return the original label array
-            
+
             return -np.ones_like(gdf.is_land.values)
 
     def clip_to_truth(self, truthpolypath):
@@ -874,7 +894,6 @@ Photons Returned: {self.data.shape[0]}
 
         return None
 
-
     @staticmethod
     def _clip_to_aoi(data, aoi):
 
@@ -882,19 +901,210 @@ Photons Returned: {self.data.shape[0]}
 
         return data.loc[pts_idx, :].copy()
 
+    @staticmethod # can be accessed without an instance of the class
+    def compress_ground_track(along_track_in, lat_in, lon_in,
+                              polynomial_order=6, plot=False, profile=None):
+
+        # note that the polynomial fit coefficients are also depending on along track
+        # so we scale the along track distance to start 0 when fitting
+        # total along track defines the stop point
+        # can resample however you want within 0 and total_along_track_distance
+
+        total_along_track_distance = np.int64(
+            along_track_in.max() - along_track_in.min())
+
+        along_track_fit = along_track_in - along_track_in.min()
+
+        # fit a polynomial to the lat / lon data
+        lon_coeffs = np.polyfit(along_track_fit, lon_in, deg=polynomial_order)
+        lat_coeffs = np.polyfit(along_track_fit, lat_in, deg=polynomial_order)
+
+        # store values you can use to sensibly reconstruct the track lat / lon
+        cparams = {'total_along_track_distance': total_along_track_distance,
+                   'lat_coeffs': lat_coeffs,
+                   'lon_coeffs': lon_coeffs}
+
+        if plot==True:
+
+            if profile is None:
+                raise ValueError("Must provide a profile to plot compression")
+                
+            # plot the original data and the reconstructed track
+            plot_compression(profile, cparams)
+
+
+        return cparams
+
+    @staticmethod
+    def reconstruct_track(cparams, along_track_sampling_meters=1000):
+
+        lat_poly_object = np.poly1d(cparams['lat_coeffs'])
+        lon_poly_object = np.poly1d(cparams['lon_coeffs'])
+
+        x_reconstructed = np.linspace(0,
+                                      cparams['total_along_track_distance'],
+                                      along_track_sampling_meters)
+
+        lat_reconstructed = lat_poly_object(x_reconstructed)
+        lon_reconstructed = lon_poly_object(x_reconstructed)
+
+        return lon_reconstructed, lat_reconstructed
+
+def plot_compression(profile, cparams, along_track_sampling_meters=1000):
+
+    lon_reconstructed, lat_reconstructed = Profile.reconstruct_track(
+        cparams, along_track_sampling_meters)
+
+    # subsample by the nearest along track of the actual photon data for easier plotting
+    data = profile.along_track_subsample(meters=20)
+
+    f, ax = plt.subplots(1, 1, sharex=False, figsize=[7, 7])
+    ax.set_title(profile.get_formatted_filename())
+    ax.plot(data.lon, data.lat, 'b',
+            label='Original Photon Data')
+
+    ax.plot(lon_reconstructed, lat_reconstructed, 'r-.',
+            label='Reconstructed Track')
+
+    ax.legend()
+    ax.set_xlabel('Longitude')
+    ax.set_ylabel('Latitude')
+    ax.grid()
+    f.tight_layout()
+
+    return f, ax
+    
+
 
 if __name__ == "__main__":
 
     import sys
+    import os
+    import json
+    import numpy as np
+    import matplotlib.pyplot as plt
 
     sys.path.append('/Users/jonathan/Documents/Research/OpenOceans')
     import openoceans as oo
 
-    nc_aoi = oo.GeoAOI.from_geojson(os.path.abspath('demos/demo_data/pamlico.geojson'))
-    h5_filepath = os.path.join(os.getcwd(), 'sample_data', 'north_carolina_ATL03_20191024144104_04230506_005_01.h5')
-    p = oo.Profile.from_h5(h5_filepath, 'gt2r', aoi=nc_aoi, verbose=False)
-    print(p)
+    # testing compression
+    # I dont think / know if this will work over the poles or antimeridian
+    # Inherently assumes that data are ordered by time
+    # I dont know what the best order
+
+    # now reconstruct track from cparams only
+    # given compression parameters
+
+
+
+
+
+    # encoder for handling numpy types in json
+    # via https://github.com/hmallen/numpyencoder/numpyencoder/numpyencoder.py
+    class NumpyEncoder(json.JSONEncoder):
+        """ Custom encoder for numpy data types """
+
+        def default(self, obj):
+            if isinstance(obj, (np.int_, np.intc, np.intp, np.int8,
+                                np.int16, np.int32, np.int64, np.uint8,
+                                np.uint16, np.uint32, np.uint64)):
+
+                return int(obj)
+
+            elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+                return float(obj)
+
+            elif isinstance(obj, (np.complex_, np.complex64, np.complex128)):
+                return {'real': obj.real, 'imag': obj.imag}
+
+            elif isinstance(obj, (np.ndarray,)):
+                return obj.tolist()
+
+            elif isinstance(obj, (np.bool_)):
+                return bool(obj)
+
+            elif isinstance(obj, (np.void)):
+                return None
+
+            return json.JSONEncoder.default(self, obj)
+
+    # profile class method
+    def from_database_entry(filepath, AOI=None):
+
+        data = read_database_entry(filepath, AOI=AOI)
+
+        # change this when its a class method, dont need profile
+        self.from_h5(data['path'], data['gtxx'],
+                     aoi=AOI, verbose=False)
+
+    # this should be a class method
+
+    def read_database_entry(filepath, AOI=None):
+
+        with open(filepath) as json_file:
+            data = json.load(json_file)
+
+        # convert lists to numpy arrays
+        # to do
+
+        return data
+
+    def write_database_entry(profile, cparams, output_directory=None):
+
+        # put together path to output
+        if output_directory is None:
+            output_directory = os.getcwd()
+
+        output_path = os.path.join(
+            output_directory, profile.get_formatted_filename() + '.json')
+
+        # combine track parameters with track metadata
+        # includes the absolute path to the h5 file
+        output_dict = {**profile.info, **cparams}
+
+        # convert the date object to a string
+        output_dict['date'] = output_dict['date'].strftime('%Y%m%d')
+
+        with open(output_path, "w") as outfile:
+            json.dump(output_dict, outfile, cls=NumpyEncoder)
+
+        return output_path
+
+    # boilerplate script
+    nc_aoi = oo.GeoAOI.from_geojson(
+        os.path.abspath('demos/demo_data/pamlico.geojson'))
+    h5_filepath = os.path.join(os.getcwd(
+    ), 'sample_data', 'north_carolina_ATL03_20191024144104_04230506_005_01.h5')
+    profile = oo.Profile.from_h5(
+        h5_filepath, 'gt2r', aoi=nc_aoi, verbose=False)
+    print(profile)
     print('done! :)')
+
+    # TESTING DATABASES BELOW HERE
+
+    # user inputs
+    polynomial_order = 3  # recall + 1 for constant term
+    along_track_sampling_meters = 100  # m
+
+    along_track_ph = profile.data.dist_ph_along.values
+    lat_ph = profile.data.lat.values
+    lon_ph = profile.data.lon.values
+
+    # compressing ground track
+    cparams = oo.Profile.compress_ground_track(along_track_ph,
+                                              lat_ph, lon_ph,
+                                              polynomial_order,
+                                              plot=True, 
+                                              profile=profile) # required for plotting
+
+    # writes sample json database to demo data directory
+    output_directory = os.path.join(os.path.dirname(
+        os.path.dirname(__file__)), 'demos', 'demo_data')
+
+    write_database_entry(profile, cparams, output_directory=output_directory)
+
+    done = True
+
     # # Specifying h5 file path for importing ICESat-2 Data
     # # h5_filepath = "/Users/jonathan/Documents/Research/OpenOceans/demos/data/ATL03_20210817155409_08401208_005_01.h5"
     # # h5_filepath = '/Users/jonathan/Documents/Research/HTHH_SUMMER_2022/ATL03/ATL03_20220817200811_08691608_005_01.h5'
