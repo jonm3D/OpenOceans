@@ -15,6 +15,7 @@ import os
 import matplotlib.pyplot as plt
 import hdbscan
 import seaborn as sns
+import pprint
 import json
 
 from bokeh.plotting import figure
@@ -950,6 +951,62 @@ Photons Returned: {self.data.shape[0]}
 
         return lon_reconstructed, lat_reconstructed
 
+    def write_database_entry(self, output_directory, polynomial_order=6):
+
+        along_track_ph = self.data.dist_ph_along.values
+        lat_ph = self.data.lat.values
+        lon_ph = self.data.lon.values
+
+        # compressing ground track includes visualization, but isnt really necessary
+        # its included in the write database entry
+        cparams = self.compress_ground_track(along_track_ph,
+                                            lat_ph, lon_ph,                                            
+                                            polynomial_order,
+                                            plot=False) # required for plotting
+
+        # put together path to output
+        if output_directory is None:
+            output_directory = os.getcwd()
+
+        output_path = os.path.join(
+            output_directory, self.get_formatted_filename() + '.json')
+
+        # combine track parameters with track metadata
+        # includes the absolute path to the h5 file
+        output_dict = {**self.info, **cparams}
+
+        # convert the date object to a string
+        output_dict['date'] = output_dict['date'].strftime('%Y%m%d')
+
+        with open(output_path, "w") as outfile:
+            json.dump(output_dict, outfile, cls=NumpyEncoder,
+            sort_keys=False, indent=4, separators=(',', ': '))
+
+        return output_path
+
+    def read_database_entry(filepath, verbose=False):
+
+        with open(filepath) as json_file:
+            data = json.load(json_file)
+
+        if verbose:
+            print(f'Reading database entry from...\n {filepath}')
+            pp = pprint.PrettyPrinter()
+            pp.pprint(data)
+
+        return data
+
+    @classmethod
+    def from_database_entry(cls, filepath, AOI=None):
+
+        data = cls.read_database_entry(filepath)
+
+        # change this when its a class method, dont need profile
+        profile = cls.from_h5(data['path'], data['gtxx'],
+                     aoi=AOI, verbose=False)
+
+        return profile
+
 def plot_compression(profile, cparams, along_track_sampling_meters=1000):
 
     lon_reconstructed, lat_reconstructed = Profile.reconstruct_track(
@@ -973,7 +1030,36 @@ def plot_compression(profile, cparams, along_track_sampling_meters=1000):
     f.tight_layout()
 
     return f, ax
-    
+
+# encoder for handling numpy types in json
+# via https://github.com/hmallen/numpyencoder/numpyencoder/numpyencoder.py
+class NumpyEncoder(json.JSONEncoder):
+    """ Custom encoder for numpy data types """
+
+    def default(self, obj):
+        if isinstance(obj, (np.int_, np.intc, np.intp, np.int8,
+                            np.int16, np.int32, np.int64, np.uint8,
+                            np.uint16, np.uint32, np.uint64)):
+
+            return int(obj)
+
+        elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+            return float(obj)
+
+        elif isinstance(obj, (np.complex_, np.complex64, np.complex128)):
+            return {'real': obj.real, 'imag': obj.imag}
+
+        elif isinstance(obj, (np.ndarray,)):
+            return obj.tolist()
+
+        elif isinstance(obj, (np.bool_)):
+            return bool(obj)
+
+        elif isinstance(obj, (np.void)):
+            return None
+
+        return json.JSONEncoder.default(self, obj)
+
 
 
 if __name__ == "__main__":
@@ -981,6 +1067,7 @@ if __name__ == "__main__":
     import sys
     import os
     import json
+    import pprint
     import numpy as np
     import matplotlib.pyplot as plt
 
@@ -998,77 +1085,9 @@ if __name__ == "__main__":
 
 
 
-
-    # encoder for handling numpy types in json
-    # via https://github.com/hmallen/numpyencoder/numpyencoder/numpyencoder.py
-    class NumpyEncoder(json.JSONEncoder):
-        """ Custom encoder for numpy data types """
-
-        def default(self, obj):
-            if isinstance(obj, (np.int_, np.intc, np.intp, np.int8,
-                                np.int16, np.int32, np.int64, np.uint8,
-                                np.uint16, np.uint32, np.uint64)):
-
-                return int(obj)
-
-            elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
-                return float(obj)
-
-            elif isinstance(obj, (np.complex_, np.complex64, np.complex128)):
-                return {'real': obj.real, 'imag': obj.imag}
-
-            elif isinstance(obj, (np.ndarray,)):
-                return obj.tolist()
-
-            elif isinstance(obj, (np.bool_)):
-                return bool(obj)
-
-            elif isinstance(obj, (np.void)):
-                return None
-
-            return json.JSONEncoder.default(self, obj)
-
-    # profile class method
-    def from_database_entry(filepath, AOI=None):
-
-        data = read_database_entry(filepath, AOI=AOI)
-
-        # change this when its a class method, dont need profile
-        self.from_h5(data['path'], data['gtxx'],
-                     aoi=AOI, verbose=False)
-
     # this should be a class method
 
-    def read_database_entry(filepath, AOI=None):
 
-        with open(filepath) as json_file:
-            data = json.load(json_file)
-
-        # convert lists to numpy arrays
-        # to do
-
-        return data
-
-    def write_database_entry(profile, cparams, output_directory=None):
-
-        # put together path to output
-        if output_directory is None:
-            output_directory = os.getcwd()
-
-        output_path = os.path.join(
-            output_directory, profile.get_formatted_filename() + '.json')
-
-        # combine track parameters with track metadata
-        # includes the absolute path to the h5 file
-        output_dict = {**profile.info, **cparams}
-
-        # convert the date object to a string
-        output_dict['date'] = output_dict['date'].strftime('%Y%m%d')
-
-        with open(output_path, "w") as outfile:
-            json.dump(output_dict, outfile, cls=NumpyEncoder)
-
-        return output_path
 
     # boilerplate script
     nc_aoi = oo.GeoAOI.from_geojson(
@@ -1090,7 +1109,8 @@ if __name__ == "__main__":
     lat_ph = profile.data.lat.values
     lon_ph = profile.data.lon.values
 
-    # compressing ground track
+    # compressing ground track includes visualization, but isnt really necessary
+    # its included in the write database entry
     cparams = oo.Profile.compress_ground_track(along_track_ph,
                                               lat_ph, lon_ph,
                                               polynomial_order,
@@ -1101,8 +1121,14 @@ if __name__ == "__main__":
     output_directory = os.path.join(os.path.dirname(
         os.path.dirname(__file__)), 'demos', 'demo_data')
 
-    write_database_entry(profile, cparams, output_directory=output_directory)
+    path_to_entry = profile.write_database_entry(output_directory)
 
+    # read database entry
+    compressed_track_data = oo.Profile.read_database_entry(path_to_entry, verbose=True)
+
+    profile2 = oo.Profile.from_database_entry(path_to_entry)
+    profile_aoi = oo.Profile.from_database_entry(path_to_entry, AOI=nc_aoi)
+    
     done = True
 
     # # Specifying h5 file path for importing ICESat-2 Data
