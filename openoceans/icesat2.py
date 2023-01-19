@@ -24,9 +24,7 @@ from bokeh.layouts import row
 from bokeh.tile_providers import get_provider
 tile_provider = get_provider('ESRI_IMAGERY')
 
-# IMPORT FUNCTION DOESNT KNOW HOW TO DISTINGUISH BETWEEN PRERELEASE AND RELEASE DATA
-# saving images / filenames doesnt account for section number from ATL03 name
-
+# Need to address section number in ATL03 name detail
 
 def beam_info(gtxx, sc_orient):
 

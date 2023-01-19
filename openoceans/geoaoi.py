@@ -7,8 +7,11 @@ from ipyleaflet import Polygon as IPyPolygon
 from IPython.display import display
 
 class GeoAOI:
+
     # stores a bounding box and has basic io/viz methods
+    
     def __init__(self, poly=None):
+    
         self.poly = poly
 
     def edit(self):

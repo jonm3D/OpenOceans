@@ -11,13 +11,6 @@ from scipy.ndimage import gaussian_filter1d
 import scipy.stats as stats
 from scipy.signal import savgol_filter
 
-# to do
-# - add refraction corrections
-
-def round_if_integer(x, n=2):
-    if round(x, n) == x:
-        return np.int64(x)
-    return x
 
 class ModelMaker:
 
@@ -619,6 +612,12 @@ class Model:
             labels.loc[idx_in_this_bin[i_noise_idx]] = 2
 
         return labels  # also output them for convenience
+
+
+def round_if_integer(x, n=2):
+    if round(x, n) == x:
+        return np.int64(x)
+    return x
 
 
 if __name__ == "__main__":
