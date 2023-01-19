@@ -1,6 +1,6 @@
 # OpenOceans 
 
-OpenOceans is a small repository of tools for ICESat-2 bathymetry science.
+OpenOceans is a small tool for manual classification of small amounts of bathymetry in ICESat-2 data.
 
 Made with ❤️ and ☕️ by:
 
