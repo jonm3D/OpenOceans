@@ -11,10 +11,9 @@ from scipy.ndimage import gaussian_filter1d
 import scipy.stats as stats
 from scipy.signal import savgol_filter
 
-
 class ModelMaker:
 
-    def __init__(self, res_along_track, res_z, range_z, window_size, step_along_track, fit=False, verbose=False):
+    def __init__(self, res_along_track, res_z, range_z, window_size=1, step_along_track=1, fit=False, verbose=False):
         """Create an instance with specified processing parameters at which to process profiles..
 
         Args:
@@ -28,8 +27,12 @@ class ModelMaker:
         assert step_along_track <= window_size  # prevents gaps in data coverage
         assert step_along_track > 0
         assert window_size > 0
+
         # odd for symmetry about center bins
         assert np.mod(window_size, 2) == 1
+
+        # require window size be 1 to avoid errors i havent fixed yet
+        assert window_size == 1
 
         self.res_along_track = res_along_track
         self.res_z = res_z
@@ -181,7 +184,6 @@ class ModelMaker:
                           'quality_flag': w.quality_flag,
                           'bathy_conf': w.bathy_quality_ratio,
                           'water_conf': -999,
-                          'sat_flag': w.sat_flag,
                           'sat_check': w.sat_check,
                           'n_photons': df_win.shape[0]}
 
@@ -411,7 +413,7 @@ class Model:
 
         along_track_delta = self.params.at_med - self.profile.data.dist_ph_along.min()
 
-        f, ax = plt.subplots(5, 1, figsize=(8, 11), sharex=True)
+        f, ax = plt.subplots(4, 1, figsize=(8, 9), sharex=True)
 
         ax[0].plot(self.profile.data.dist_ph_along - self.profile.data.dist_ph_along.min(),
                  self.profile.data.height - self.profile.data.geoid_z,
@@ -422,7 +424,7 @@ class Model:
         ax[0].legend()
         ax[0].grid()
         ax[0].set_ylabel('EGM08 Elevation (m)')
-        ax[0].set_ylim([min(-self.params.surf_loc) - 5,
+        ax[0].set_ylim([min(-self.params.surf_loc) - 30,
                        max(-self.params.surf_loc) + 10])
 
         ax[1].plot(along_track_delta, self.params.surf_std, 'r')
@@ -435,21 +437,21 @@ class Model:
         ax[2].set_title('Surface Prominence')
         ax[2].grid()
 
-        ax[3].plot(along_track_delta, self.params.bathy_prom /
-                   self.params.surf_prom, 'm', label='Bathy/Surface Prominence')
-        ax[3].fill_between(along_track_delta, 0.5, 1.1, color='g', alpha=0.2)
-        ax[3].fill_between(along_track_delta, 0.25, 0.5, color='y', alpha=0.2)
-        ax[3].fill_between(along_track_delta, 0.0, 0.25, color='r', alpha=0.2)
+        # ax[3].plot(along_track_delta, self.params.bathy_prom /
+        #            self.params.surf_prom, 'm', label='Bathy/Surface Prominence')
+        # ax[3].fill_between(along_track_delta, 0.5, 1.1, color='g', alpha=0.2)
+        # ax[3].fill_between(along_track_delta, 0.25, 0.5, color='y', alpha=0.2)
+        # ax[3].fill_between(along_track_delta, 0.0, 0.25, color='r', alpha=0.2)
 
-        ax[3].set_ylim([-0.1, 1.1])
-        ax[3].set_title('Bathymetry Confidence TBD')
-        # ax[3].grid()
+        # ax[3].set_ylim([-0.1, 1.1])
+        # ax[3].set_title('Bathymetry Confidence TBD')
+        # # ax[3].grid()
 
-        ax[4].plot(along_track_delta, self.params.turb_score, 'k')
-        ax[4].set_title('Turbidity Score')
-        ax[4].set_ylabel('photon-meters')
-        ax[4].grid()
-        ax[4].set_xlabel('Along Track Delta (m)')
+        ax[3].plot(along_track_delta, self.params.turb_score, 'k')
+        ax[3].set_title('Turbidity Score')
+        ax[3].set_ylabel('photon-meters')
+        ax[3].grid()
+        ax[3].set_xlabel('Along Track Delta (m)')
 
         f.suptitle(ModelMakerInit.get_formatted_filename() +
                    ' - ' + self.profile.get_formatted_filename().upper())

@@ -128,25 +128,25 @@ class Profile:
         # details about the track (date, gtxx, rgt, cycle)
         self.info = info
 
-        # photon resolution satellite data
-        # add land classifications
+        # # photon resolution satellite data
+        # # add land classifications
 
-        if aoi is not None:
-            shoreline_bbox = aoi.poly.bounds
-        else:
-            shoreline_bbox = None
+        # if aoi is not None:
+        #     shoreline_bbox = aoi.poly.bounds
+        # else:
+        #     shoreline_bbox = None
 
-        try:
+        # try:
 
-            land_point_labels = self._find_land_points(
-                data, bbox=shoreline_bbox)
+        #     land_point_labels = self._find_land_points(
+        #         data, bbox=shoreline_bbox)
 
-            data.loc[:, 'is_land'] = land_point_labels
+        #     data.loc[:, 'is_land'] = land_point_labels
 
-            # data.loc[land_idx, 'is_land'] = 0
+        #     # data.loc[land_idx, 'is_land'] = 0
 
-        except:
-            pass
+        # except:
+        #     pass
 
         # save to Profile object
         self.data = data
