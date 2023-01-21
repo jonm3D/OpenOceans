@@ -623,28 +623,4 @@ def round_if_integer(x, n=2):
 
 
 if __name__ == "__main__":
-    from waveform import Waveform
-    from icesat2 import Profile
-    import os
-
-    # note range z input is elevation, not depth
-    M = ModelMaker(res_along_track=50, res_z=0.25, range_z=(-50, 20),
-                   window_size=1, step_along_track=1, fit=False)
-
-    h5_filepath = "/Users/jonathan/Documents/Research/OpenOceans/demos/data/ATL03_20210817155409_08401208_005_01.h5"
-    h5_filepath = '/Users/jonathan/Documents/Research/PAPER_Density_Heuristic_IS2_Bathy/nc_is2_2019/ATL03_20191206003613_10710502_005_01.h5'
-
-    p = Profile.from_h5(h5_filepath, 'gt1r')
-    p.clip_to_ocean()
-
-    m = M.process(p)
-
-    # self = m
-    m.show()
-
-    plt.figure()
-    thr = 10
-    okidx = m.params.bathy_conf > thr
-    plt.plot(p.data.lat, p.data.height-p.data.geoid_z,
-             'k.', markersize=0.5, alpha=.8)
-    plt.plot(m.params.y_med[okidx], -m.params.bathy_loc[okidx], 'r.')
+    pass
