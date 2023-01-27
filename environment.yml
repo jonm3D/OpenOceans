@@ -27,6 +27,3 @@ dependencies:
 - ipyleaflet
 - fast-histogram
 name: openoceans
-pip:
-- progressbar2
-- waipy
