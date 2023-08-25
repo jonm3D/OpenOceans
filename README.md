@@ -10,6 +10,8 @@ Graduate Research Assistant<br />
 The University of Texas at Austin<br />
 jonathanmarkel@gmail.com<br />
 
+This work was supported by NASA FINESST Award 80NSSC23K0272.
+
 ## Labeling Tool
 ICESat-2 data is provided as individual transects of photon-counting lidar returns. Point cloud features such as ground, canopy, sea surface, and bathymetry are easily distinguished by humans, but automated methods of feature extraction are still an open area of research. 
 
