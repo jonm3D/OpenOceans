@@ -1,6 +1,6 @@
 # OpenOceans 
 
-OpenOceans is a small tool for manual classification of small amounts of bathymetry in ICESat-2 data.
+OpenOceans is a small tool for manual classification of small amounts of bathymetry in ICESat-2 data. Automated extraction methods are currently still in testing!
 
 Made with ❤️ and ☕️ by:
 
